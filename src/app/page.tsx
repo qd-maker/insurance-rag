@@ -150,7 +150,7 @@ export default function App() {
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: new Headers({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, matchThreshold: 0.55 }),
       });
 
       if (!res.ok) {

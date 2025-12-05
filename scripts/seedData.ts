@@ -15,6 +15,11 @@ export const productsToInsert: SeedProduct[] = [
     content:
       '这是一款面向大众的百万医疗险，支持住院医疗费用报销，设定年度免赔额 1 万元；重疾确诊可一次性给付 10 万；等待期 30 天；对既往症除外。',
   },
+  {
+    name: '康宁保重疾险',
+    content:
+      '康宁保重疾险保障重疾、中症和轻症，重疾最高赔付50万元，支持投保人豁免。',
+  }
 
   // 旧方式：直接提供结构化 description 与 clauses（仍然兼容）
   // {
