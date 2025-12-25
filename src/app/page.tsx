@@ -119,11 +119,11 @@ export default function App() {
     const suggested = `${result.productName}-${y}${m}${d}`;
     try {
       document.title = suggested;
-    } catch {}
+    } catch { }
     try {
       window.print();
     } finally {
-      setTimeout(() => { try { document.title = prev; } catch {} }, 500);
+      setTimeout(() => { try { document.title = prev; } catch { } }, 500);
     }
   }
 
@@ -199,7 +199,7 @@ export default function App() {
                   setHasSearched(false);
                   setCheckMeta(null);
                   setCopyStatus('idle');
-                  try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch {}
+                  try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { }
                   setTimeout(() => inputRef.current?.focus(), 50);
                 }}
                 className="text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1 rounded-full inline-flex items-center gap-1"
@@ -207,7 +207,7 @@ export default function App() {
                 <Home className="w-3.5 h-3.5" /> 回到首页
               </button>
             ) : (
-          <div className="text-xs font-medium text-slate-400 bg-slate-100 px-3 py-1 rounded-full">内部系统 v2.0</div>
+              <div className="text-xs font-medium text-slate-400 bg-slate-100 px-3 py-1 rounded-full">内部系统 v2.0</div>
             )}
           </div>
         </div>
@@ -235,7 +235,7 @@ export default function App() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="例如：尊享一生、平安福、金满意足..."
+              placeholder="例如：安心无忧医疗险、康宁保重疾险、惠民安心守护重大疾病险..."
               className="w-full pl-12 pr-24 py-4 bg-white border border-slate-200 rounded-2xl shadow-sm text-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all hover:border-slate-300"
               disabled={loading}
             />
@@ -319,7 +319,7 @@ export default function App() {
                   type="button"
                   onClick={onCopyScripts}
                   disabled={!canUseActions}
-                  className={`no-print px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${copyStatus==='success' ? 'bg-green-50 border-green-100 text-green-700' : 'bg-indigo-50 border-indigo-100 text-indigo-700 hover:bg-indigo-100'} disabled:opacity-50 disabled:cursor-not-allowed`}
+                  className={`no-print px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${copyStatus === 'success' ? 'bg-green-50 border-green-100 text-green-700' : 'bg-indigo-50 border-indigo-100 text-indigo-700 hover:bg-indigo-100'} disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
                   {copyStatus === 'success' ? '已复制 ✓' : copyStatus === 'error' ? '复制失败' : '复制话术'}
                 </button>
