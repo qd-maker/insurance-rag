@@ -15,7 +15,12 @@ import {
   XCircle,
   ArrowRight,
   Home,
+  MessageCircleQuestion,
+  Link,
 } from 'lucide-react';
+
+// 来源信息类型
+type SourceInfo = { clauseId: number; productName: string | null };
 
 // 结果类型定义（与后端 /api/search 返回保持一致）
 type SearchResult = {
@@ -26,7 +31,15 @@ type SearchResult = {
   targetAudience: string;
   salesScript: string[];
   rawTerms: string;
+  sources: SourceInfo[];
 };
+
+// 场景预设按钮配置
+const PRESET_QUESTIONS = [
+  { label: '这款保险适合谁？', icon: Users },
+  { label: '免责条款怎么解释给客户？', icon: AlertCircle },
+  { label: '和传统产品比优势在哪？', icon: Sparkles },
+];
 
 const SectionTitle = ({ icon: Icon, title, className = '' }: any) => (
   <div className={`flex items-center gap-2 mb-4 text-slate-800 font-semibold ${className}`}>
@@ -249,6 +262,29 @@ export default function App() {
               {!loading && <ArrowRight className="w-3.5 h-3.5" />}
             </button>
           </form>
+
+          {/* 场景预设按钮 */}
+          {!hasSearched && (
+            <div className="flex flex-wrap justify-center gap-3 mt-6">
+              <span className="text-sm text-slate-400 flex items-center gap-1">
+                <MessageCircleQuestion className="w-4 h-4" />
+                常见业务问题：
+              </span>
+              {PRESET_QUESTIONS.map((q, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => {
+                    setQuery(q.label);
+                    setTimeout(() => handleSearch(), 100);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-full text-sm text-slate-600 hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-700 transition-all shadow-sm"
+                >
+                  <q.icon className="w-3.5 h-3.5" />
+                  {q.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Loading State Skeleton */}
@@ -385,6 +421,23 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+                {/* 信息来源标注 */}
+                {result.sources && result.sources.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-indigo-100">
+                    <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                      <Link className="w-3.5 h-3.5" />
+                      <span className="font-medium">信息来源：</span>
+                      {result.sources.slice(0, 3).map((src, idx) => (
+                        <span key={idx} className="inline-flex items-center px-2 py-0.5 bg-white rounded border border-slate-200 text-slate-600">
+                          {src.productName ? `${src.productName} · ` : ''}条款 #{src.clauseId}
+                        </span>
+                      ))}
+                      {result.sources.length > 3 && (
+                        <span className="text-slate-400">等 {result.sources.length} 条条款</span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </Card>
 
               {/* Collapsible Raw Terms */}

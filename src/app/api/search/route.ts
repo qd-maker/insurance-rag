@@ -13,24 +13,29 @@ const GENERATION_MODEL = process.env.GENERATION_MODEL || 'gpt-4o-mini';
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY, baseURL: OPENAI_BASE_URL });
 
+// 来源信息类型
+type SourceInfo = { clauseId: number; productName: string | null };
+
 // 将检索到的条款整理成可控长度的上下文，避免超长
 function buildContext(
   rows: Array<{ id: number; product_id: number | null; content: string | null }>,
   productNames: Record<number, string>
-) {
+): { context: string; sources: SourceInfo[] } {
   const parts: string[] = [];
+  const sources: SourceInfo[] = [];
   for (const r of rows) {
-    const name = r.product_id ? productNames[r.product_id] : undefined;
+    const name = r.product_id ? productNames[r.product_id] : null;
     const header = name ? `【产品】${name}  条款ID#${r.id}` : `条款ID#${r.id}`;
     const content = (r.content || '').trim();
     if (!content) continue;
     parts.push(`${header}\n${content}`);
+    sources.push({ clauseId: r.id, productName: name });
   }
   // 控制总长度，避免超过模型上下文限制（粗略按字符裁剪）
   let ctx = parts.join('\n\n---\n\n');
   const MAX_CHARS = 6000; // 约束在一个合理范围内
   if (ctx.length > MAX_CHARS) ctx = ctx.slice(0, MAX_CHARS);
-  return ctx;
+  return { context: ctx, sources };
 }
 
 export async function POST(req: Request) {
@@ -121,7 +126,7 @@ export async function POST(req: Request) {
       }, {});
     }
 
-    const context = buildContext(rows, productNames);
+    const { context, sources } = buildContext(rows, productNames);
 
     // 3) 让模型按固定 JSON 模板抽取结构化信息
     // 使用 JSON 模式尽量保证只返回 JSON
@@ -157,6 +162,7 @@ export async function POST(req: Request) {
         targetAudience: '',
         salesScript: [],
         rawTerms: context || '',
+        sources: sources || [],
         _raw: text, // 便于排查（可在生产中移除）
       };
     }
@@ -167,8 +173,11 @@ export async function POST(req: Request) {
         (jsonOut as any)._debugUsedFallback = usedFallback;
         (jsonOut as any)._debugContext = context;
         (jsonOut as any)._debugMatches = rows?.slice?.(0, 20) ?? [];
-      } catch {}
+      } catch { }
     }
+
+    // 添加来源信息
+    jsonOut.sources = sources;
 
     // 最终只返回结构化对象（不包裹 ok 字段，符合你的要求）
     return NextResponse.json(jsonOut);
