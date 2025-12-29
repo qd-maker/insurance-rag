@@ -15,7 +15,6 @@ import {
   XCircle,
   ArrowRight,
   Home,
-  MessageCircleQuestion,
   Link,
 } from 'lucide-react';
 
@@ -34,12 +33,7 @@ type SearchResult = {
   sources: SourceInfo[];
 };
 
-// 场景预设按钮配置
-const PRESET_QUESTIONS = [
-  { label: '这款保险适合谁？', icon: Users },
-  { label: '免责条款怎么解释给客户？', icon: AlertCircle },
-  { label: '和传统产品比优势在哪？', icon: Sparkles },
-];
+
 
 const SectionTitle = ({ icon: Icon, title, className = '' }: any) => (
   <div className={`flex items-center gap-2 mb-4 text-slate-800 font-semibold ${className}`}>
@@ -262,29 +256,6 @@ export default function App() {
               {!loading && <ArrowRight className="w-3.5 h-3.5" />}
             </button>
           </form>
-
-          {/* 场景预设按钮 */}
-          {!hasSearched && (
-            <div className="flex flex-wrap justify-center gap-3 mt-6">
-              <span className="text-sm text-slate-400 flex items-center gap-1">
-                <MessageCircleQuestion className="w-4 h-4" />
-                常见业务问题：
-              </span>
-              {PRESET_QUESTIONS.map((q, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => {
-                    setQuery(q.label);
-                    setTimeout(() => handleSearch(), 100);
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-full text-sm text-slate-600 hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-700 transition-all shadow-sm"
-                >
-                  <q.icon className="w-3.5 h-3.5" />
-                  {q.label}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* Loading State Skeleton */}
