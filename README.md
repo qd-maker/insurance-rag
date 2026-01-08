@@ -112,3 +112,62 @@
 ## 🧠 一句话总结（给面试官看的）
 
 > **这是一个把 AI 从“会回答问题”，变成“真正帮业务员提高效率”的产品原型。**
+
+---
+
+## 🚀 八、本地启动教程
+
+### 1️⃣ 克隆项目
+
+```bash
+git clone https://github.com/qd-maker/insurance-rag.git
+cd insurance-rag
+```
+
+### 2️⃣ 安装依赖
+
+```bash
+npm install
+# 或使用 pnpm/yarn
+pnpm install
+```
+
+### 3️⃣ 配置环境变量
+
+在项目根目录创建 `.env.local` 文件：
+
+```bash
+# Supabase 配置
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+
+# OpenAI 配置
+OPENAI_API_KEY=your_openai_api_key
+```
+
+**获取方式：**
+- **Supabase**：访问 [supabase.com](https://supabase.com) → 创建项目 → Settings → API
+- **OpenAI**：访问 [platform.openai.com](https://platform.openai.com/api-keys)
+
+### 4️⃣ 启动开发服务器
+
+```bash
+npm run dev
+```
+
+访问 [http://localhost:3000](http://localhost:3000) 即可查看应用 🎉
+
+---
+
+### 📝 其他命令
+
+```bash
+# 构建生产版本
+npm run build
+
+# 启动生产服务器
+npm run start
+
+# 代码检查
+npm run lint
+```
