@@ -5,6 +5,7 @@ dotenv.config();
 
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import { embedText } from '../src/lib/embeddings';
 
 // 从本地数据文件读取待插入的数据
 // 请在 scripts/seedData.ts 中导出 productsToInsert 数组
@@ -39,16 +40,16 @@ function normalize(s: string) {
     .replace(/[()（）［］【】\[\]·•．・。、，,._/:\\'’"“”-]+/g, '');
 }
 
-// 工具函数：为文本生成 1536 维向量
+// 工具函数：为文本生成向量（使用多模态 API）
 async function embed(text: string): Promise<number[]> {
-  const res = await openai.embeddings.create({ model: EMBEDDING_MODEL, input: text });
-  const v = res.data[0].embedding;
-  if (!Array.isArray(v) || v.length !== 1536) {
-    // 某些聚合可能返回不同维度，请确保与你的表定义一致
-    console.warn(`警告：embedding 维度为 ${Array.isArray(v) ? v.length : 'unknown'}，表定义为 1536。`);
+  const embedding = await embedText(text, { model: EMBEDDING_MODEL });
+  const expectedDim = 1536;
+  if (embedding.length !== expectedDim) {
+    console.warn(`警告：embedding 维度为 ${embedding.length}，表定义为 ${expectedDim}。`);
   }
-  return v as unknown as number[];
+  return embedding;
 }
+
 
 // 当提供 content 时，利用模型从原始文本自动抽取 description 与 clauses
 async function analyzeProductContent(name: string, content: string): Promise<{ description: string; clauses: string[] }> {
@@ -97,13 +98,23 @@ async function main() {
     console.log(`\n[${pi + 1}/${productsToInsert.length}] 处理产品：${name}`);
 
     try {
-      // 若提供 content，则自动抽取；优先保留显式提供的字段
+      // 若提供 content，优先保留原始完整内容
       if (content && content.trim()) {
-        console.log(`  检测到原始内容 content，调用模型抽取 description 与 clauses...`);
+        console.log(`  检测到原始内容 content...`);
+
+        // 仍然让 AI 生成简短 description
         const extracted = await analyzeProductContent(name, content.trim());
-        if (!description && extracted.description) description = extracted.description;
-        if ((!clauses || clauses.length === 0) && extracted.clauses?.length) clauses = extracted.clauses;
-        console.log(`  抽取完成：description=${description ? '有' : '无'}，clauses=${clauses.length} 条`);
+        if (!description && extracted.description) {
+          description = extracted.description;
+          console.log(`  AI 提取 description 完成`);
+        }
+
+        // ✅ 关键修改：直接使用原始 content 作为单条完整条款
+        // 不再依赖 AI 提取简化版，避免信息丢失
+        if (!clauses || clauses.length === 0) {
+          clauses = [content.trim()];
+          console.log(`  使用完整原始内容作为条款（避免信息丢失）`);
+        }
       }
 
       // 幂等 upsert：按归一化名称匹配
@@ -137,11 +148,11 @@ async function main() {
           console.log(`  产品已存在（id=${productId}），描述无变化`);
         }
       } else {
-    const { data: insertedProduct, error: prodErr } = await supabase
-      .from('products')
-      .insert({ name, description })
-      .select('id')
-      .single();
+        const { data: insertedProduct, error: prodErr } = await supabase
+          .from('products')
+          .insert({ name, description })
+          .select('id')
+          .single();
         if (prodErr) throw new Error(`插入产品失败：${prodErr.message}`);
         productId = insertedProduct!.id as number;
         summary.products.created++;
@@ -151,11 +162,11 @@ async function main() {
       // 写入条款（去重：同产品下 content 完全一致则跳过）
       for (const [ci, contentItem] of (clauses || []).entries()) {
         const text = (contentItem || '').trim();
-      if (!text) {
-        console.warn(`  条款第 ${ci + 1} 条为空，已跳过`);
+        if (!text) {
+          console.warn(`  条款第 ${ci + 1} 条为空，已跳过`);
           summary.clauses.skipped++;
-        continue;
-      }
+          continue;
+        }
 
         // 先查重再嵌入，避免不必要的 embedding 成本
         const { count: dupCount, error: dupErr } = await supabase
@@ -170,16 +181,16 @@ async function main() {
           summary.clauses.skipped++;
           console.log(`  [${ci + 1}/${clauses.length}] 已存在，跳过`);
           continue;
-      }
+        }
 
         // 生成向量并写入
         try {
           const embedding = await embed(text);
-      const { error: clauseErr } = await supabase.from('clauses').insert({
-        product_id: productId,
-        content: text,
-        embedding,
-      });
+          const { error: clauseErr } = await supabase.from('clauses').insert({
+            product_id: productId,
+            content: text,
+            embedding,
+          });
           if (clauseErr) throw clauseErr;
           summary.clauses.inserted++;
           console.log(`  [${ci + 1}/${clauses.length}] 条款已写入`);
@@ -209,6 +220,79 @@ async function main() {
   } else {
     console.log('\n全部成功 ✅');
   }
+
+  // ========== 🆕 新增：自动生成向量 ==========
+  if (summary.clauses.inserted > 0) {
+    console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🔧 检测到新插入条款，开始自动生成向量...\n');
+
+    try {
+      // 查找所有没有向量的条款
+      const { data: allClauses, error: queryErr } = await supabase
+        .from('clauses')
+        .select('id, content, embedding');
+
+      if (queryErr) throw queryErr;
+
+      const clausesWithoutVectors = allClauses?.filter(c => {
+        return !c.embedding || !Array.isArray(c.embedding) || c.embedding.length === 0;
+      }) || [];
+
+      if (clausesWithoutVectors.length === 0) {
+        console.log('所有条款都已有向量，跳过向量生成。');
+      } else {
+        console.log(`发现 ${clausesWithoutVectors.length} 条缺失向量的条款\n`);
+
+        let vectorSuccess = 0;
+        let vectorFailed = 0;
+
+        for (const clause of clausesWithoutVectors) {
+          try {
+            console.log(`处理条款 #${clause.id}...`);
+
+            if (!clause.content || clause.content.trim() === '') {
+              console.log(`  ⚠️ 跳过：内容为空`);
+              continue;
+            }
+
+            // 生成向量
+            const embedding = await embed(clause.content);
+
+            // 更新数据库
+            const { error: updateErr } = await supabase
+              .from('clauses')
+              .update({ embedding })
+              .eq('id', clause.id);
+
+            if (updateErr) {
+              console.log(`  ❌ 更新失败: ${updateErr.message}`);
+              vectorFailed++;
+            } else {
+              console.log(`  ✅ 成功（${embedding.length}维）`);
+              vectorSuccess++;
+            }
+
+            // 避免 API 限流
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+          } catch (err: any) {
+            console.log(`  ❌ 错误: ${err.message}`);
+            vectorFailed++;
+          }
+        }
+
+        console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('向量生成完成！');
+        console.log(`  ✅ 成功: ${vectorSuccess} 条`);
+        console.log(`  ❌ 失败: ${vectorFailed} 条`);
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      }
+    } catch (e: any) {
+      console.error('\n向量生成失败：', e?.message || e);
+      console.log('提示：可以稍后手动运行 npx tsx scripts/regenerate-vectors.ts');
+    }
+  }
+  // ========== 自动向量生成结束 ==========
 }
 
 main().catch((err) => {

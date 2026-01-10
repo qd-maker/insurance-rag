@@ -60,6 +60,7 @@ ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.clauses ENABLE ROW LEVEL SECURITY;
 
 -- Products 表：Service Role 可读
+DROP POLICY IF EXISTS "service_role_read_products" ON public.products;
 CREATE POLICY "service_role_read_products"
 ON public.products
 FOR SELECT
@@ -67,18 +68,21 @@ TO service_role
 USING (true);
 
 -- Clauses 表：Service Role 可读写
+DROP POLICY IF EXISTS "service_role_read_clauses" ON public.clauses;
 CREATE POLICY "service_role_read_clauses"
 ON public.clauses
 FOR SELECT
 TO service_role
 USING (true);
 
+DROP POLICY IF EXISTS "service_role_insert_clauses" ON public.clauses;
 CREATE POLICY "service_role_insert_clauses"
 ON public.clauses
 FOR INSERT
 TO service_role
 WITH CHECK (true);
 
+DROP POLICY IF EXISTS "service_role_update_clauses" ON public.clauses;
 CREATE POLICY "service_role_update_clauses"
 ON public.clauses
 FOR UPDATE
@@ -86,6 +90,7 @@ TO service_role
 USING (true)
 WITH CHECK (true);
 
+DROP POLICY IF EXISTS "service_role_delete_clauses" ON public.clauses;
 CREATE POLICY "service_role_delete_clauses"
 ON public.clauses
 FOR DELETE
@@ -96,8 +101,15 @@ USING (true);
 CREATE OR REPLACE FUNCTION public.update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
-  NEW.updated_at = NOW();
+  -- 安全地更新 updated_at，即使在某些边缘情况下也能工作
+  IF TG_OP = 'UPDATE' THEN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+  END IF;
   RETURN NEW;
+EXCEPTION
+  WHEN undefined_column THEN
+    -- 如果列不存在，忽略错误并返回
+    RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -112,4 +124,5 @@ CREATE TRIGGER update_clauses_updated_at
 BEFORE UPDATE ON public.clauses
 FOR EACH ROW
 EXECUTE FUNCTION public.update_updated_at_column();
+
 
