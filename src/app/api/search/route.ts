@@ -1,3 +1,5 @@
+import { embedText } from '@/lib/embeddings';
+
 export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
@@ -9,7 +11,7 @@ const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 // 生成模型可按需替换为 gpt-4 或其他模型（需支持 JSON 输出）
 const GENERATION_MODEL = process.env.GENERATION_MODEL || 'gpt-4o-mini';
 
-// OpenAI 聚合/直连
+// OpenAI 聚合/直连（仍用于 chat completions）
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY, baseURL: OPENAI_BASE_URL });
 
@@ -55,29 +57,77 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const query = (body?.query ?? '').toString().trim();
     const matchCount: number = Number(body?.matchCount ?? 10);
-    const matchThreshold: number = Number(body?.matchThreshold ?? 0.3);
+    const matchThreshold: number = Number(body?.matchThreshold ?? 0.1);
 
     if (!query) {
       return NextResponse.json({ error: '缺少必填参数 query' }, { status: 400 });
     }
 
-    // 1) 生成查询向量
-    const embRes = await openai.embeddings.create({
-      model: EMBEDDING_MODEL,
-      input: query,
-    });
-    const queryEmbedding = embRes.data[0].embedding;
+    // ========== 新增：混合检索 - 产品名优先匹配 ==========
+    // 归一化函数（与 products/check 保持一致）
+    function normalizeProductName(name: string): string {
+      return name
+        .toLowerCase()
+        .normalize('NFKC')
+        .replace(/[\s\u3000]/g, '')
+        .replace(/[()（）［］【】\[\]·•．・。、，,._/:'""-]+/g, '');
+    }
+
+    // 0) 优先检查产品名是否直接匹配
+    const queryNorm = normalizeProductName(query);
+    const { data: allProducts } = await supabase
+      .from('products')
+      .select('id, name');
+
+    let priorityProductIds: number[] = [];
+    for (const p of allProducts || []) {
+      const nameNorm = normalizeProductName(p.name);
+      // 双向包含检查：查询包含产品名 或 产品名包含查询
+      if (nameNorm.includes(queryNorm) || queryNorm.includes(nameNorm)) {
+        priorityProductIds.push(p.id);
+      }
+    }
+    // ========== 混合检索结束 ==========
+
+    // 1) 生成查询向量 - 使用多模态 API
+    const queryEmbedding = await embedText(query, { model: EMBEDDING_MODEL });
+
 
     // 2) 调用 Supabase 向量匹配函数
     const { data: matches, error: matchErr } = await supabase.rpc('match_clauses', {
       query_embedding: queryEmbedding,
       match_threshold: matchThreshold,
-      match_count: matchCount,
+      match_count: matchCount * 2, // 扩大召回，后续重排
     });
     if (matchErr) throw matchErr;
 
     let rows: Array<{ id: number; product_id: number | null; content: string | null; similarity?: number }>
       = Array.isArray(matches) ? matches : [];
+
+    // ========== 新增：优先级过滤 + 重排序 ==========
+    if (priorityProductIds.length > 0 && rows.length > 0) {
+      // 🔥 关键修改：如果有产品名匹配，只保留该产品的条款
+      const priorityRows = rows.filter(r => r.product_id && priorityProductIds.includes(r.product_id));
+
+      if (priorityRows.length > 0) {
+        // 如果优先产品有足够条款，只使用这些条款
+        rows = priorityRows;
+        console.log(`[混合检索] 产品名匹配成功，过滤为仅包含匹配产品的 ${rows.length} 条条款`);
+      } else {
+        // 否则保留所有结果并重排序
+        rows.sort((a, b) => {
+          const aMatch = a.product_id && priorityProductIds.includes(a.product_id);
+          const bMatch = b.product_id && priorityProductIds.includes(b.product_id);
+          if (aMatch && !bMatch) return -1;
+          if (!aMatch && bMatch) return 1;
+          return (b.similarity || 0) - (a.similarity || 0);
+        });
+      }
+
+      // 截取到原始 matchCount
+      rows = rows.slice(0, matchCount);
+    }
+    // ========== 过滤 + 重排序结束 ==========
 
     let usedFallback = false;
 

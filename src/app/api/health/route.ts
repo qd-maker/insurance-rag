@@ -4,9 +4,10 @@
  * 访问：GET /api/health
  */
 
+export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import OpenAI from 'openai';
+import { embedText } from '@/lib/embeddings';
 
 export async function GET() {
   const checks: Record<string, { ok: boolean; message: string }> = {};
@@ -49,18 +50,16 @@ export async function GET() {
   if (!supabaseCheck.ok) overallStatus = 'degraded';
   checks.supabase = supabaseCheck;
 
-  // OpenAI 连接检查
+  // OpenAI 连接检查（使用多模态 API）
   const openaiCheck = { ok: false, message: '' };
   try {
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const res = await openai.embeddings.create({
+    const embedding = await embedText('健康检查', {
       model: process.env.EMBEDDING_MODEL || 'text-embedding-3-small',
-      input: '健康检查',
     });
 
-    if (res.data && res.data[0]) {
+    if (embedding && embedding.length > 0) {
       openaiCheck.ok = true;
-      openaiCheck.message = `OpenAI 连接正常 (维度: ${res.data[0].embedding.length})`;
+      openaiCheck.message = `OpenAI 连接正常 (维度: ${embedding.length})`;
     } else {
       openaiCheck.message = 'OpenAI 返回空响应';
     }
@@ -146,4 +145,3 @@ export async function GET() {
     { status: overallStatus === 'error' ? 500 : 200 }
   );
 }
-
