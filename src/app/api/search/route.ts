@@ -1,4 +1,5 @@
 import { embedText } from '@/lib/embeddings';
+import { QueryLogger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
@@ -41,6 +42,9 @@ function buildContext(
 }
 
 export async function POST(req: Request) {
+  const startTime = Date.now();
+  const logger = new QueryLogger();
+
   try {
     if (!OPENAI_API_KEY) {
       return NextResponse.json({ error: '缺少 OPENAI_API_KEY' }, { status: 500 });
@@ -62,6 +66,10 @@ export async function POST(req: Request) {
     if (!query) {
       return NextResponse.json({ error: '缺少必填参数 query' }, { status: 400 });
     }
+
+    // 记录查询
+    logger.setQuery(query);
+    logger.setTopK(matchCount);
 
     // ========== 新增：混合检索 - 产品名优先匹配 ==========
     // 归一化函数（与 products/check 保持一致）
@@ -90,7 +98,9 @@ export async function POST(req: Request) {
     // ========== 混合检索结束 ==========
 
     // 1) 生成查询向量 - 使用多模态 API
+    const embeddingStart = Date.now();
     const queryEmbedding = await embedText(query, { model: EMBEDDING_MODEL });
+    logger.setEmbeddingDuration(Date.now() - embeddingStart);
 
 
     // 2) 调用 Supabase 向量匹配函数
@@ -128,6 +138,9 @@ export async function POST(req: Request) {
       rows = rows.slice(0, matchCount);
     }
     // ========== 过滤 + 重排序结束 ==========
+
+    // 记录检索结果
+    logger.setRetrievedChunks(rows);
 
     let usedFallback = false;
 
@@ -186,6 +199,8 @@ export async function POST(req: Request) {
 
     const debug = Boolean(body?.debug);
 
+    // LLM调用
+    const llmStart = Date.now();
     const chat = await openai.chat.completions.create({
       model: GENERATION_MODEL,
       temperature: 0.2,
@@ -195,6 +210,12 @@ export async function POST(req: Request) {
         { role: 'user', content: userPrompt },
       ],
     });
+    logger.setLLMDuration(Date.now() - llmStart);
+
+    // 记录token使用
+    const promptTokens = chat.usage?.prompt_tokens || 0;
+    const completionTokens = chat.usage?.completion_tokens || 0;
+    logger.setTokensUsed(promptTokens, completionTokens);
 
     const text = chat.choices?.[0]?.message?.content?.trim() || '';
 
@@ -229,9 +250,22 @@ export async function POST(req: Request) {
     // 添加来源信息
     jsonOut.sources = sources;
 
+    // 记录产品名和总耗时
+    logger.setProductMatched(jsonOut.productName || null);
+    logger.setRefusal(false, null);
+    logger.setDuration(Date.now() - startTime);
+
+    // 保存日志（异步，不阻塞响应）
+    logger.save().catch(err => console.error('[Logger] Save failed:', err));
+
     // 最终只返回结构化对象（不包裹 ok 字段，符合你的要求）
     return NextResponse.json(jsonOut);
   } catch (e: any) {
+    // 记录错误并保存日志
+    logger.setRefusal(true, e?.message || 'Internal Error');
+    logger.setDuration(Date.now() - startTime);
+    logger.save().catch(err => console.error('[Logger] Save failed:', err));
+
     return NextResponse.json({ error: e?.message || 'Internal Error' }, { status: 500 });
   }
 }

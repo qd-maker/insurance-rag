@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import ConstellationBackground from '../components/ConstellationBackground';
 import {
   Search,
   Shield,
@@ -8,20 +10,29 @@ import {
   Users,
   FileText,
   ChevronDown,
-  ChevronUp,
   Sparkles,
   BookOpen,
   CheckCircle2,
   XCircle,
   ArrowRight,
-  Home,
   Link,
+  History,
+  Zap
 } from 'lucide-react';
 
-// 来源信息类型
+// ==================== 自定义类型 ====================
+
+type Product = {
+  id: number;
+  name: string;
+  aliases: string[];
+  version: string;
+  last_updated: string;
+  source: string;
+};
+
 type SourceInfo = { clauseId: number; productName: string | null };
 
-// 结果类型定义（与后端 /api/search 返回保持一致）
 type SearchResult = {
   productName: string;
   overview: string;
@@ -33,119 +44,87 @@ type SearchResult = {
   sources: SourceInfo[];
 };
 
-
-
-const SectionTitle = ({ icon: Icon, title, className = '' }: any) => (
-  <div className={`flex items-center gap-2 mb-4 text-slate-800 font-semibold ${className}`}>
-    <Icon className="w-5 h-5 text-indigo-600" />
-    <h3>{title}</h3>
-  </div>
-);
-
-const Card = ({ children, className = '' }: React.PropsWithChildren<{ className?: string }>) => (
-  <div className={`bg-white rounded-xl border border-slate-200 shadow-sm p-6 hover:shadow-md transition-shadow duration-300 ${className}`}>
-    {children}
-  </div>
-);
-
-const Badge = ({ text }: { text: string }) => (
-  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 mr-2">
-    {text}
-  </span>
-);
+// ==================== 主应用 ====================
 
 export default function App() {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [query, setQuery] = useState('');
+  // 状态：产品列表
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
+
+  // 状态：选择与搜索
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [productSearch, setProductSearch] = useState('');
+  const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
+
+  // 状态：搜索执行
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<SearchResult | null>(null);
-  const [notImported, setNotImported] = useState(false);
-  const [checkMeta, setCheckMeta] = useState<{ suggestions?: string[] } | null>(null);
-  const [isTermsOpen, setIsTermsOpen] = useState(false);
+  const [searchNotFound, setSearchNotFound] = useState<{ query: string; reason: string } | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
+
+  // 状态：UI 交互
+  const [isTermsOpen, setIsTermsOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
+  // 引用
+  const productInputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+
+  // 隐藏入口：连续点击 Logo 5 次
+  const router = useRouter();
+  const [logoClickCount, setLogoClickCount] = useState(0);
+  const logoClickTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // 挂载时加载产品
   useEffect(() => {
-    if (!query.trim()) { setNotImported(false); setCheckMeta(null); return; }
-    const ctrl = new AbortController();
-    const timer = setTimeout(async () => {
+    async function loadProducts() {
       try {
-        const res = await fetch(`/api/products/check?q=${encodeURIComponent(query)}`, { signal: ctrl.signal });
-        const json = await res.json();
-        if (json?.ok) {
-          const block = json.productExists === true && json.clauseExists === false;
-          setNotImported(block);
-          setCheckMeta({ suggestions: json.suggestions ?? [] });
-        } else {
-          setNotImported(false);
-          setCheckMeta(null);
+        const res = await fetch('/api/products/list');
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setProducts(data);
         }
-      } catch (err) {
-        // ignore
+      } catch (e) {
+        console.error('无法加载产品列表', e);
+      } finally {
+        setLoadingProducts(false);
       }
-    }, 500);
-    return () => { ctrl.abort(); clearTimeout(timer); };
-  }, [query]);
-  const [searchNotFound, setSearchNotFound] = useState<{ query: string; reason: string } | null>(null);
-
-  const canUseActions = !!result && !loading && !notImported && !searchNotFound;
-
-  function formatSalesScriptText(r: SearchResult): string {
-    const lines: string[] = [];
-    lines.push(`【产品】${r.productName}`);
-    if (r.overview?.trim()) lines.push(`概览：${r.overview.trim()}`);
-    if (Array.isArray(r.salesScript)) {
-      r.salesScript.forEach((s, i) => {
-        if (!s) return;
-        lines.push(`${i + 1}) ${String(s).trim()}`);
-      });
     }
-    return lines.join('\n');
-  }
+    loadProducts();
+  }, []);
 
-  async function onCopyScripts() {
-    if (!result) return;
-    try {
-      await navigator.clipboard.writeText(formatSalesScriptText(result));
-      setCopyStatus('success');
-      setTimeout(() => setCopyStatus('idle'), 2000);
-    } catch (e) {
-      console.warn('复制失败', e);
-      setCopyStatus('error');
-      setTimeout(() => setCopyStatus('idle'), 2000);
+  // 点击外部关闭下拉框
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsProductDropdownOpen(false);
+      }
     }
-  }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
-  async function onExportPdf() {
-    if (!result) return;
-    const prev = document.title;
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    const suggested = `${result.productName}-${y}${m}${d}`;
-    try {
-      document.title = suggested;
-    } catch { }
-    try {
-      window.print();
-    } finally {
-      setTimeout(() => { try { document.title = prev; } catch { } }, 500);
-    }
-  }
+  // 过滤建议产品
+  const filteredProducts = products.filter(p => {
+    const searchLower = productSearch.toLowerCase().trim();
+    if (!searchLower) return true;
+    return (
+      p.name.toLowerCase().includes(searchLower) ||
+      p.aliases.some(alias => alias.toLowerCase().includes(searchLower))
+    );
+  });
+
+  // 操作
+  const handleSelectProduct = (p: Product) => {
+    setSelectedProduct(p);
+    setProductSearch(p.name);
+    setIsProductDropdownOpen(false);
+  };
 
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!query.trim() || loading) return;
-
-    // 仅当“产品存在但无条款”才拦截；其余情况放行 /api/search
-    if (notImported) {
-      setHasSearched(true);
-      setResult(null);
-      setSearchNotFound(null);
-      setIsTermsOpen(false);
-      return;
-    }
+    if (!selectedProduct || loading) return;
 
     setLoading(true);
     setHasSearched(true);
@@ -154,10 +133,12 @@ export default function App() {
     setIsTermsOpen(false);
 
     try {
+      const fullQuery = selectedProduct.name;
+
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: new Headers({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ query, matchThreshold: 0.55 }),
+        body: JSON.stringify({ query: fullQuery, matchThreshold: 0.55 }),
       });
 
       if (!res.ok) {
@@ -168,279 +149,335 @@ export default function App() {
       const data: any = await res.json();
       if (data?.notFound) {
         setSearchNotFound(data.notFound);
-        setResult(null);
       } else {
         setResult(data as SearchResult);
-        setSearchNotFound(null);
       }
+
+      // 延迟滚动
+      setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 300);
+
     } catch (error) {
-      console.error('Search failed', error);
+      console.error('搜索失败', error);
     } finally {
       setLoading(false);
     }
   };
 
+  function formatSalesScriptText(r: SearchResult): string {
+    return [
+      `【产品卡片】${r.productName}`,
+      `概览：${r.overview}`,
+      `适用人群：${r.targetAudience}`,
+      `核心保障：\n${r.coreCoverage.map(c => `- ${c.title} (${c.value}): ${c.desc}`).join('\n')}`,
+      `销售话术：\n${r.salesScript.map((s, i) => `${i + 1}. ${s}`).join('\n')}`,
+    ].join('\n\n');
+  }
+
+  async function onExportFile() {
+    if (!result) return;
+    try {
+      const content = formatSalesScriptText(result);
+      const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${result.productName}_销售分析报告_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '')}.md`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setCopyStatus('success');
+      setTimeout(() => setCopyStatus('idle'), 2000);
+    } catch (e) {
+      setCopyStatus('error');
+      setTimeout(() => setCopyStatus('idle'), 2000);
+    }
+  }
+
+  function handleReset() {
+    setSelectedProduct(null);
+    setProductSearch('');
+    setResult(null);
+    setSearchNotFound(null);
+    setHasSearched(false);
+    setIsProductDropdownOpen(false);
+    setIsTermsOpen(false);
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // 隐藏入口：连续点击 Logo 5 次进入管理页
+  function handleLogoClick() {
+    const newCount = logoClickCount + 1;
+    setLogoClickCount(newCount);
+
+    // 清除之前的定时器
+    if (logoClickTimer.current) {
+      clearTimeout(logoClickTimer.current);
+    }
+
+    // 2 秒内未继续点击则重置计数
+    logoClickTimer.current = setTimeout(() => {
+      setLogoClickCount(0);
+    }, 2000);
+
+    // 达到 5 次，跳转到管理页面
+    if (newCount >= 5) {
+      setLogoClickCount(0);
+      if (logoClickTimer.current) {
+        clearTimeout(logoClickTimer.current);
+      }
+      router.push('/admin/add-product');
+    }
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-600 selection:bg-indigo-100 selection:text-indigo-900 flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-100 sticky top-0 z-10 no-print">
-        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-indigo-600 p-1.5 rounded-lg">
-              <Shield className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-bold text-slate-900 tracking-tight text-lg">
-              Insure<span className="text-indigo-600">AI</span> 智库
-            </span>
-          </div>
-          <div className="no-print">
-            {hasSearched ? (
-              <button
-                onClick={() => {
-                  // 重置到首页视图
-                  setQuery('');
-                  setResult(null);
-                  setNotImported(false);
-                  setSearchNotFound(null);
-                  setIsTermsOpen(false);
-                  setHasSearched(false);
-                  setCheckMeta(null);
-                  setCopyStatus('idle');
-                  try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { }
-                  setTimeout(() => inputRef.current?.focus(), 50);
-                }}
-                className="text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1 rounded-full inline-flex items-center gap-1"
-              >
-                <Home className="w-3.5 h-3.5" /> 回到首页
-              </button>
-            ) : (
-              <div className="text-xs font-medium text-slate-400 bg-slate-100 px-3 py-1 rounded-full">内部系统 v2.0</div>
-            )}
-          </div>
+    <div className="min-h-screen relative selection:bg-blue-100 selection:text-blue-900 overflow-x-hidden">
+
+      {/* 星座粒子动态背景 */}
+      <ConstellationBackground />
+
+      {/* 顶部导航 */}
+      <nav className="fixed top-0 w-full z-50 px-8 py-6 flex justify-between items-center">
+        <div className="text-xl font-bold flex items-center gap-2 text-slate-800 cursor-pointer" onClick={handleReset}>
+          <span className="text-blue-600" onClick={(e) => { e.stopPropagation(); handleLogoClick(); }}>智析</span>保险知识引擎
         </div>
-      </header>
+        {result && (
+          <button
+            onClick={handleReset}
+            className="flex items-center gap-2 bg-white/80 backdrop-blur-md border border-slate-200 text-slate-600 px-4 py-2 rounded-full text-sm font-medium hover:bg-white hover:border-slate-300 hover:text-slate-900 transition-all shadow-sm"
+          >
+            <Search className="w-4 h-4" />
+            重新搜索
+          </button>
+        )}
+      </nav>
 
-      {/* Main Content */}
-      <main className={`flex-grow w-full max-w-5xl mx-auto px-4 flex flex-col gap-8 ${hasSearched ? 'py-12' : 'pt-16'}`}>
-        {/* Search Section */}
-        <div className={`no-print transition-all duration-500 ease-out flex flex-col items-center w-full ${hasSearched ? '' : ''}`}>
-          <div className="text-center mb-6 w-full max-w-2xl mx-auto">
-            {!hasSearched && (
-              <>
-                <h1 className="text-3xl font-bold text-slate-900 mb-1.5">想要查询什么保险产品？</h1>
-                <p className="text-slate-500">输入产品名称，AI 将为您解析核心条款与销售要点</p>
-              </>
-            )}
-          </div>
+      <div className="max-w-5xl mx-auto px-6 pt-40 pb-24 relative z-20 isolate">
 
-          <form onSubmit={handleSearch} className="w-full max-w-2xl mx-auto relative group">
-            <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-              <Search className={`w-5 h-5 transition-colors ${loading ? 'text-indigo-500 animate-pulse' : 'text-slate-400 group-focus-within:text-indigo-500'}`} />
+        {/* 标题区域: 极简纯白风格 */}
+        <div className="text-center mb-24 animate-fade-in-up">
+          <div className="flex justify-center mb-6">
+            <div className="w-16 h-16 bg-white rounded-2xl shadow-xl flex items-center justify-center">
+              <Zap className="w-8 h-8 text-blue-600" />
             </div>
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="例如：安心无忧医疗险、康宁保重疾险、惠民安心守护重大疾病险..."
-              className="w-full pl-12 pr-24 py-4 bg-white border border-slate-200 rounded-2xl shadow-sm text-lg text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all hover:border-slate-300"
-              disabled={loading}
-            />
-            <button
-              type="button"
-              onClick={() => handleSearch()}
-              disabled={loading || !query}
-              className="absolute right-2 top-2 bottom-2 bg-slate-900 hover:bg-indigo-600 text-white px-5 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          </div>
+          <h1 className="text-6xl md:text-7xl font-bold tracking-tight text-slate-900 mb-6 leading-[1.1]">
+            智能销售<br />
+            <span className="text-slate-500 font-medium">保险产品知识助手</span>
+          </h1>
+          <p className="text-xl text-slate-500 max-w-lg mx-auto leading-relaxed">
+            基于保险条款的深度逻辑提取。
+            <br />
+            精准、经过验证，且严格遵循条款。
+          </p>
+        </div>
+
+        {/* 交互区 */}
+        <div className="space-y-8 animate-fade-in-up delay-100 max-w-2xl mx-auto">
+
+          {/* 产品选择器 - 悬浮胶囊风格 */}
+          <div ref={dropdownRef} className="relative group z-[60]">
+            <div
+              onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
+              className={`w-full bg-white p-4 pl-6 rounded-full transition-all duration-300 cursor-pointer flex items-center justify-between shadow-[0_8px_30px_rgba(0,0,0,0.04)] hover:shadow-[0_15px_40px_rgba(0,0,0,0.08)] border border-slate-100
+                ${isProductDropdownOpen ? 'ring-4 ring-blue-50' : ''}
+              `}
             >
-              {loading ? '分析中...' : '查询'}
-              {!loading && <ArrowRight className="w-3.5 h-3.5" />}
-            </button>
-          </form>
-        </div>
-
-        {/* Loading State Skeleton */}
-        {loading && (
-          <div className="animate-pulse space-y-4 max-w-5xl w-full mx-auto mt-8">
-            <div className="h-8 bg-slate-200 rounded w-1/3 mb-6"></div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="h-40 bg-slate-200 rounded-xl"></div>
-              <div className="h-40 bg-slate-200 rounded-xl md:col-span-2"></div>
-            </div>
-            <div className="h-60 bg-slate-200 rounded-xl"></div>
-          </div>
-        )}
-
-        {/* Not Imported Hint Section */}
-        {!loading && notImported && (
-          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <Card className="md:col-span-3 border-amber-200 bg-amber-50">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5" />
-                <div>
-                  <div className="font-semibold text-slate-800">此类保险未导入</div>
-                  {checkMeta?.suggestions?.length ? (
-                    <div className="mt-2 text-sm text-slate-600 flex flex-wrap items-center gap-2">
-                      <span className="opacity-70">你可以试试：</span>
-                      {checkMeta.suggestions.map((s) => (
-                        <button
-                          key={s}
-                          className="px-2 py-0.5 border rounded-md hover:bg-white"
-                          onClick={() => setQuery(s)}
-                        >
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
+              <div className="flex items-center gap-4 flex-1">
+                <Search className="w-5 h-5 text-slate-400" />
+                <div className={`text-lg transition-colors ${selectedProduct ? 'text-slate-900 font-medium' : 'text-slate-400'}`}>
+                  {selectedProduct ? selectedProduct.name : '输入产品名称或别名搜索...'}
                 </div>
               </div>
-            </Card>
-          </div>
-        )}
-
-        {/* Results Section */}
-        {!loading && !notImported && result && (
-          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            {/* Header Result */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-200/60">
-              <div>
-                <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
-                  {result.productName}
-                  <span className="px-2 py-1 bg-green-50 text-green-700 text-xs rounded-md font-medium border border-green-100">在售</span>
-                </h2>
-                <p className="text-sm text-slate-400 mt-1 flex items-center gap-1">
-                  <Sparkles className="w-3 h-3" />
-                  AI 已完成核心要素提取
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={onExportPdf}
-                  disabled={!canUseActions}
-                  className="no-print px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  导出 PDF
-                </button>
-                <button
-                  type="button"
-                  onClick={onCopyScripts}
-                  disabled={!canUseActions}
-                  className={`no-print px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${copyStatus === 'success' ? 'bg-green-50 border-green-100 text-green-700' : 'bg-indigo-50 border-indigo-100 text-indigo-700 hover:bg-indigo-100'} disabled:opacity-50 disabled:cursor-not-allowed`}
-                >
-                  {copyStatus === 'success' ? '已复制 ✓' : copyStatus === 'error' ? '复制失败' : '复制话术'}
-                </button>
+              <div className="w-10 h-10 bg-slate-50 rounded-full flex items-center justify-center ml-4">
+                <ChevronDown className={`w-5 h-5 text-slate-600 transition-transform duration-300 ${isProductDropdownOpen ? 'rotate-180' : ''}`} />
               </div>
             </div>
 
-            {/* Layout Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Product Overview (Full Width on Mobile, 2 cols on Desktop) */}
-              <Card className="md:col-span-2 border-l-4 border-l-indigo-500">
-                <SectionTitle icon={BookOpen} title="产品概况" />
-                <p className="text-slate-700 leading-relaxed text-base">{result.overview}</p>
-                <div className="mt-4 flex gap-2">
-                  <Badge text="百万医疗" />
-                  <Badge text="0免赔" />
-                  <Badge text="特需医疗" />
+            {/* 下拉列表 */}
+            {isProductDropdownOpen && (
+              <div className="absolute top-full left-0 right-0 mt-4 bg-white/90 backdrop-blur-xl rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.1)] overflow-hidden animate-scale-in origin-top z-[100] border border-slate-100">
+                <div className="p-4 border-b border-slate-100">
+                  <input
+                    ref={productInputRef}
+                    type="text"
+                    className="w-full bg-transparent border-none py-2 px-4 text-slate-900 text-base focus:outline-none placeholder:text-slate-400"
+                    placeholder="Type to filter..."
+                    value={productSearch}
+                    onChange={(e) => setProductSearch(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
                 </div>
-              </Card>
-
-              {/* Target Audience */}
-              <Card className="bg-gradient-to-br from-white to-slate-50">
-                <SectionTitle icon={Users} title="适合人群" />
-                <div className="text-slate-700 font-medium">{result.targetAudience}</div>
-              </Card>
-
-              {/* Core Coverage */}
-              <Card className="md:col-span-2">
-                <SectionTitle icon={Shield} title="核心保障权益" />
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-2">
-                  {result.coreCoverage.map((item, idx) => (
-                    <div key={idx} className="bg-slate-50 rounded-lg p-4 border border-slate-100">
-                      <div className="text-indigo-600 font-bold text-xl mb-1">{item.value}</div>
-                      <div className="text-slate-900 font-semibold text-sm mb-1">{item.title}</div>
-                      <div className="text-xs text-slate-500 leading-snug">{item.desc}</div>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-
-              {/* Exclusions (Warning Style) */}
-              <Card className="border-red-100 bg-red-50/30">
-                <SectionTitle icon={XCircle} title="责任免除 (重点关注)" className="text-red-700" />
-                <ul className="space-y-3">
-                  {result.exclusions.map((item, idx) => (
-                    <li key={idx} className="flex gap-2 text-sm text-slate-700 items-start">
-                      <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </Card>
-
-              {/* Sales Script (Highlighted) */}
-              <Card className="md:col-span-3 bg-indigo-50/50 border-indigo-100">
-                <SectionTitle icon={Sparkles} title="AI 推荐销售话术" className="text-indigo-800" />
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {result.salesScript.map((script, idx) => (
-                    <div key={idx} className="relative bg-white p-4 rounded-lg border border-indigo-100 shadow-sm">
-                      <div className="absolute -top-2 -left-2 bg-indigo-100 text-indigo-600 w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold">
-                        {idx + 1}
+                <div className="max-h-64 overflow-y-auto p-2">
+                  {filteredProducts.map((product) => (
+                    <button
+                      key={product.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectProduct(product);
+                      }}
+                      className="w-full text-left p-4 rounded-xl hover:bg-slate-50 transition-colors flex items-center justify-between group/item"
+                    >
+                      <div>
+                        <div className="text-slate-900 font-medium group-hover/item:text-blue-600 transition-colors">{product.name}</div>
+                        {product.aliases.length > 0 && (
+                          <div className="text-xs text-slate-400 mt-1">
+                            {product.aliases.join(' / ')}
+                          </div>
+                        )}
                       </div>
-                      <p className="text-slate-700 text-sm leading-relaxed">"{script}"</p>
-                    </div>
+                      {selectedProduct?.id === product.id && <CheckCircle2 className="w-5 h-5 text-blue-600" />}
+                    </button>
                   ))}
+                  {filteredProducts.length === 0 && (
+                    <div className="p-8 text-center text-slate-400">未找到匹配产品</div>
+                  )}
                 </div>
-                {/* 信息来源标注 */}
-                {result.sources && result.sources.length > 0 && (
-                  <div className="mt-4 pt-4 border-t border-indigo-100">
-                    <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                      <Link className="w-3.5 h-3.5" />
-                      <span className="font-medium">信息来源：</span>
-                      {result.sources.slice(0, 3).map((src, idx) => (
-                        <span key={idx} className="inline-flex items-center px-2 py-0.5 bg-white rounded border border-slate-200 text-slate-600">
-                          {src.productName ? `${src.productName} · ` : ''}条款 #{src.clauseId}
-                        </span>
-                      ))}
-                      {result.sources.length > 3 && (
-                        <span className="text-slate-400">等 {result.sources.length} 条条款</span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </Card>
+              </div>
+            )}
+          </div>
 
-              {/* Collapsible Raw Terms */}
-              <div className="md:col-span-3">
-                <button
-                  onClick={() => setIsTermsOpen(!isTermsOpen)}
-                  className="w-full flex items-center justify-between bg-white px-6 py-4 rounded-xl border border-slate-200 shadow-sm hover:bg-slate-50 transition-all text-left group"
-                >
-                  <div className="flex items-center gap-3">
-                    <FileText className="w-5 h-5 text-slate-400 group-hover:text-indigo-500 transition-colors" />
-                    <span className="font-medium text-slate-700">查看条款原文摘要</span>
-                  </div>
-                  {isTermsOpen ? <ChevronUp className="w-5 h-5 text-slate-400" /> : <ChevronDown className="w-5 h-5 text-slate-400" />}
-                </button>
+          {/* 生成按钮 - Google 黑色胶囊风格 */}
+          <div className={`flex justify-center transition-all duration-500 transform ${selectedProduct ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8 pointer-events-none'}`}>
+            <button
+              onClick={() => handleSearch()}
+              disabled={!selectedProduct || loading}
+              className="bg-black text-white h-14 pl-8 pr-2 rounded-full font-medium hover:scale-105 active:scale-95 transition-all shadow-xl flex items-center gap-4 group"
+            >
+              <span className="tracking-wide">{loading ? '正在解析...' : '生成智能卡片'}</span>
+              <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-black group-hover:rotate-45 transition-transform">
+                {loading ? <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" /> : <ArrowRight className="w-5 h-5" />}
+              </div>
+            </button>
+          </div>
 
-                {isTermsOpen && (
-                  <div className="mt-2 bg-slate-50 border border-slate-200 rounded-xl p-6 text-sm font-mono text-slate-600 leading-relaxed whitespace-pre-wrap shadow-inner">
-                    {result.rawTerms}
-                  </div>
-                )}
+        </div>
+
+        {/* 结果展示区 - 增加上边距保证不被下拉框覆盖 */}
+        <div ref={resultsRef} className="mt-48 pt-16 relative z-10">
+
+          {loading && (
+            <div className="space-y-8 animate-fade-in-up max-w-4xl mx-auto">
+              <div className="h-4 bg-slate-100 rounded w-1/4 mx-auto animate-pulse" />
+              <div className="grid grid-cols-2 gap-8">
+                <div className="h-64 bg-white rounded-3xl shadow-sm border border-slate-100 animate-pulse" />
+                <div className="h-64 bg-white rounded-3xl shadow-sm border border-slate-100 animate-pulse delay-100" />
               </div>
             </div>
-          </div>
-        )}
-      </main>
+          )}
 
-      {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-8 mt-auto">
-        <div className="max-w-5xl mx-auto px-4 text-center">
-          <p className="text-slate-400 text-sm">© 2025 公司内部保险查询系统 · 数据仅供参考，以正式条款为准</p>
+          {searchNotFound && (
+            <div className="p-12 rounded-3xl bg-white border border-dashed border-slate-200 text-center animate-fade-in-up max-w-2xl mx-auto">
+              <div className="inline-flex p-4 rounded-full bg-red-50 mb-4 text-red-500">
+                <AlertCircle className="w-8 h-8" />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900 mb-2">未发现相关内容</h3>
+              <p className="text-slate-500">{searchNotFound.query}</p>
+            </div>
+          )}
+
+          {!loading && result && (
+            <div className="animate-fade-in-up space-y-16">
+              {/* 结果头部 */}
+              <div className="text-center">
+                <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-50 text-blue-600 text-xs font-bold uppercase tracking-wider mb-4">
+                  <CheckCircle2 className="w-4 h-4" /> Verified Analysis
+                </div>
+                <h2 className="text-4xl md:text-5xl font-bold text-slate-900 mb-8">{result.productName}</h2>
+              </div>
+
+              {/* 卡片布局 */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+                {/* 概览 */}
+                <div className="lg:col-span-2 glass-panel p-8 rounded-3xl transition-all hover:bg-white">
+                  <div className="flex items-center gap-3 mb-6 text-blue-600">
+                    <BookOpen className="w-6 h-6" />
+                    <h3 className="font-bold text-lg text-slate-900">核心分析</h3>
+                  </div>
+                  <p className="text-slate-600 leading-relaxed text-lg">{result.overview}</p>
+                </div>
+
+                {/* 适合人群 (深色突显) */}
+                <div className="bg-slate-900 text-white p-8 rounded-3xl shadow-xl flex flex-col justify-between group hover:-translate-y-2 transition-transform">
+                  <div className="mb-8">
+                    <Users className="w-8 h-8 text-slate-400 mb-4" />
+                    <h3 className="text-xl font-bold">适用人群</h3>
+                  </div>
+                  <p className="text-slate-300 text-lg leading-relaxed font-light">
+                    {result.targetAudience}
+                  </p>
+                </div>
+
+                {/* 核心保障 */}
+                <div className="lg:col-span-3 bg-white border border-slate-100 p-8 rounded-3xl shadow-sm">
+                  <div className="flex items-center gap-3 mb-8">
+                    <Shield className="w-6 h-6 text-slate-900" />
+                    <h3 className="font-bold text-xl text-slate-900">关键权益</h3>
+                  </div>
+                  <div className="grid md:grid-cols-3 gap-6">
+                    {result.coreCoverage.map((item, idx) => (
+                      <div key={idx} className="p-6 rounded-2xl bg-slate-50 hover:bg-blue-50/50 transition-colors border border-transparent hover:border-blue-100">
+                        <div className="text-2xl font-bold text-slate-900 mb-2">{item.value}</div>
+                        <div className="text-xs font-bold text-blue-600 uppercase tracking-widest mb-3">{item.title}</div>
+                        <div className="text-sm text-slate-600 leading-relaxed">{item.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 话术推荐 */}
+                <div className="lg:col-span-2 glass-panel p-8 rounded-3xl">
+                  <div className="flex items-center gap-3 mb-6">
+                    <Sparkles className="w-6 h-6 text-purple-600" />
+                    <h3 className="font-bold text-lg text-slate-900">AI 销售话术</h3>
+                  </div>
+                  <div className="space-y-4">
+                    {result.salesScript.map((script, idx) => (
+                      <div key={idx} className="flex gap-4 p-4 rounded-xl bg-white border border-slate-100 shadow-sm hover:shadow-md transition-shadow">
+                        <span className="text-slate-200 font-black text-2xl select-none">{idx + 1}</span>
+                        <p className="text-slate-700 leading-relaxed">{script}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 责任免除 */}
+                <div className="p-8 rounded-3xl bg-red-50/50 border border-red-100">
+                  <div className="flex items-center gap-3 mb-6 text-red-600">
+                    <XCircle className="w-6 h-6" />
+                    <h3 className="font-bold text-lg">责任免除</h3>
+                  </div>
+                  <ul className="space-y-3">
+                    {result.exclusions.map((item, idx) => (
+                      <li key={idx} className="flex gap-3 text-slate-600 text-sm">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-2 shrink-0" />
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+              </div>
+
+              {/* 底部功能区 */}
+              <div className="flex justify-center pt-12 pb-24">
+                <button
+                  onClick={onExportFile}
+                  className="flex items-center gap-3 bg-blue-600 text-white px-6 py-3 rounded-full hover:bg-blue-700 transition-all text-sm font-bold shadow-lg hover:shadow-xl hover:scale-105 active:scale-95"
+                >
+                  {copyStatus === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
+                  {copyStatus === 'success' ? '导出成功' : '导出分析报告 (.md)'}
+                </button>
+              </div>
+
+            </div>
+          )}
         </div>
-      </footer>
+      </div>
     </div>
   );
 }
