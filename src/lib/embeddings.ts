@@ -84,7 +84,7 @@ export async function embedText(
         const embedding = data.data[0].embedding;
 
         // 维度检查（可选，用于调试）
-        const expectedDim = Number(process.env.EMBEDDING_DIM || '1024');
+        const expectedDim = Number(process.env.EMBEDDING_DIM || '3072');
         if (embedding.length !== expectedDim) {
             console.warn(
                 `⚠️ Embedding 维度不匹配: 期望 ${expectedDim}, 实际 ${embedding.length}`

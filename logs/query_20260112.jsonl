@@ -1,0 +1,7 @@
+{"timestamp":"2026-01-12T14:52:03.133Z","query":"宇宙无敌躺平险","top_k":10,"duration_ms":224}
+{"timestamp":"2026-01-12T14:52:11.291Z","query":"乐享年金险","top_k":10,"embedding_ms":1507,"retrieved_chunks":[{"id":95,"similarity":0.876467130815901,"snippet":"这是一款长期储蓄型年金保险，适合35-55岁人群规划养老。缴费期10年，从第11年开始每年领取基本保额的8%作为年金，保证领取20年。若被保险人生存至领取期满，可一次性领取满期金（累计已交保费的120"}],"llm_ms":27442,"tokens_used":{"prompt":592,"completion":3382},"product_matched":"乐享年金险","should_refuse":false,"refuse_reason":null,"duration_ms":30353}
+{"timestamp":"2026-01-12T14:53:03.138Z","query":"康宁保重疾险","top_k":10,"duration_ms":483}
+{"timestamp":"2026-01-12T14:53:07.971Z","query":"安心无忧医疗险","top_k":10,"duration_ms":767}
+{"timestamp":"2026-01-12T14:53:14.720Z","query":"宇宙无敌躺平险","top_k":10,"duration_ms":479}
+{"timestamp":"2026-01-12T14:57:19.965Z","query":"星际探索意外保险","top_k":10,"embedding_ms":2008,"retrieved_chunks":[{"id":98,"similarity":0.60132228159707,"snippet":"产品定位：专为航天爱好者、科幻迷及未来太空旅行者设计的创意保障产品，覆盖\"地外风险\"和\"宇宙级意外\"。\n\n核心保障：\n\n陨石坠落险：因陨石直接或间接撞击导致的人身伤害，最高赔付 100 万元\nUFO "}],"llm_ms":35481,"tokens_used":{"prompt":669,"completion":4234},"product_matched":"星际探索意外保险","should_refuse":false,"refuse_reason":null,"duration_ms":38794}
+{"timestamp":"2026-01-12T15:25:55.938Z","query":"星际探索意外保险","top_k":10,"duration_ms":1168}

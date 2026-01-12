@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import ConstellationBackground from '../components/ConstellationBackground';
 import {
@@ -33,16 +34,128 @@ type Product = {
 
 type SourceInfo = { clauseId: number; productName: string | null };
 
+// 带引用的字段类型
+type CitedField = { value: string; sourceClauseId: number | null };
+
+// 条款映射表
+type ClauseMap = Record<number, { snippet: string; productName: string | null }>;
+
 type SearchResult = {
-  productName: string;
-  overview: string;
-  coreCoverage: { title: string; value: string; desc: string }[];
-  exclusions: string[];
-  targetAudience: string;
+  productName: CitedField;
+  overview: CitedField;
+  coreCoverage: { title: string; value: string; desc: string; sourceClauseId: number | null }[];
+  exclusions: { value: string; sourceClauseId: number | null }[];
+  targetAudience: CitedField;
   salesScript: string[];
   rawTerms: string;
   sources: SourceInfo[];
+  clauseMap: ClauseMap;
 };
+
+// ==================== 加载步骤组件 ====================
+
+function LoadingStep({ icon, text, done, active }: {
+  icon: string;
+  text: string;
+  done?: boolean;
+  active?: boolean;
+}) {
+  return (
+    <div className={`flex items-center gap-3 py-2 px-3 rounded-xl transition-all ${active ? 'bg-blue-100 text-blue-700' : done ? 'text-green-600' : 'text-slate-400'
+      }`}>
+      <span className={`text-lg ${active ? 'animate-pulse' : ''}`}>{icon}</span>
+      <span className={`text-sm ${done ? 'font-medium' : ''}`}>{text}</span>
+      {active && <div className="ml-auto w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />}
+    </div>
+  );
+}
+
+// ==================== 引用徽章组件 ====================
+
+function CitationBadge({
+  clauseId,
+  clauseMap,
+  dark = false
+}: {
+  clauseId: number;
+  clauseMap: ClauseMap;
+  dark?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const clause = clauseMap?.[clauseId];
+
+  if (!clause) return null;
+
+  return (
+    <>
+      <button
+        onClick={(e) => { e.stopPropagation(); setIsOpen(true); }}
+        className={`inline-flex items-center gap-1 ml-2 px-2 py-0.5 rounded-full text-xs font-medium transition-all hover:scale-105 ${dark
+          ? 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+          : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+          }`}
+        title="点击查看条款原文"
+      >
+        <FileText className="w-3 h-3" />
+        #{clauseId}
+      </button>
+
+      {/* 条款原文弹窗 - 使用 Portal 避免 HTML 嵌套错误 */}
+      {isOpen && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+          onClick={() => setIsOpen(false)}
+        >
+          {/* 背景遮罩 - 更柔和的渐变 */}
+          <div className="absolute inset-0 bg-gradient-to-br from-slate-900/60 via-slate-800/50 to-slate-900/60 backdrop-blur-md" />
+
+          {/* 弹窗内容 */}
+          <div
+            className="relative bg-white/95 backdrop-blur-xl rounded-3xl shadow-[0_25px_60px_rgba(0,0,0,0.3)] max-w-2xl w-full max-h-[80vh] overflow-hidden animate-scale-in border border-white/20"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 顶部装饰条 */}
+            <div className="h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-blue-500" />
+
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                  <FileText className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-slate-900">条款来源 #{clauseId}</h3>
+                  {clause.productName && (
+                    <span className="text-sm text-slate-500">{clause.productName}</span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => setIsOpen(false)}
+                className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center hover:bg-red-100 hover:text-red-600 transition-all group"
+              >
+                <XCircle className="w-5 h-5 text-slate-400 group-hover:text-red-500" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto max-h-[60vh] bg-slate-50/50">
+              <div className="text-slate-700 leading-relaxed whitespace-pre-wrap text-sm">
+                {clause.snippet}
+              </div>
+            </div>
+            <div className="p-4 border-t border-slate-100 bg-white flex justify-end">
+              <button
+                onClick={() => setIsOpen(false)}
+                className="px-6 py-2 bg-slate-900 text-white rounded-xl font-medium hover:bg-slate-800 transition-all"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
 
 // ==================== 主应用 ====================
 
@@ -279,7 +392,7 @@ export default function App() {
         <div className="space-y-8 animate-fade-in-up delay-100 max-w-2xl mx-auto">
 
           {/* 产品选择器 - 悬浮胶囊风格 */}
-          <div ref={dropdownRef} className="relative group z-[60]">
+          <div ref={dropdownRef} className="relative group z-[200]">
             <div
               onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
               className={`w-full bg-white p-4 pl-6 rounded-full transition-all duration-300 cursor-pointer flex items-center justify-between shadow-[0_8px_30px_rgba(0,0,0,0.04)] hover:shadow-[0_15px_40px_rgba(0,0,0,0.08)] border border-slate-100
@@ -299,7 +412,7 @@ export default function App() {
 
             {/* 下拉列表 */}
             {isProductDropdownOpen && (
-              <div className="absolute top-full left-0 right-0 mt-4 bg-white/90 backdrop-blur-xl rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.1)] overflow-hidden animate-scale-in origin-top z-[100] border border-slate-100">
+              <div className="absolute top-full left-0 right-0 mt-4 bg-white backdrop-blur-xl rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.15)] overflow-hidden animate-scale-in origin-top z-[300] border border-slate-200">
                 <div className="p-4 border-b border-slate-100">
                   <input
                     ref={productInputRef}
@@ -341,7 +454,8 @@ export default function App() {
           </div>
 
           {/* 生成按钮 - Google 黑色胶囊风格 */}
-          <div className={`flex justify-center transition-all duration-500 transform ${selectedProduct ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8 pointer-events-none'}`}>
+          {/* 下拉菜单打开时隐藏按钮，避免层级冲突 */}
+          <div className={`flex justify-center transition-all duration-500 transform ${selectedProduct && !isProductDropdownOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8 pointer-events-none'}`}>
             <button
               onClick={() => handleSearch()}
               disabled={!selectedProduct || loading}
@@ -356,15 +470,36 @@ export default function App() {
 
         </div>
 
-        {/* 结果展示区 - 增加上边距保证不被下拉框覆盖 */}
-        <div ref={resultsRef} className="mt-48 pt-16 relative z-10">
+        {/* 结果展示区 - 增加上边距避免被下拉框遮挡 */}
+        <div ref={resultsRef} className="mt-64 pt-16 relative">
 
           {loading && (
-            <div className="space-y-8 animate-fade-in-up max-w-4xl mx-auto">
-              <div className="h-4 bg-slate-100 rounded w-1/4 mx-auto animate-pulse" />
-              <div className="grid grid-cols-2 gap-8">
-                <div className="h-64 bg-white rounded-3xl shadow-sm border border-slate-100 animate-pulse" />
-                <div className="h-64 bg-white rounded-3xl shadow-sm border border-slate-100 animate-pulse delay-100" />
+            <div className="max-w-xl mx-auto animate-fade-in-up">
+              {/* 主加载卡片 */}
+              <div className="bg-white rounded-3xl shadow-xl border border-slate-100 p-8 text-center">
+                {/* 动态加载动画 */}
+                <div className="relative w-20 h-20 mx-auto mb-6">
+                  <div className="absolute inset-0 rounded-full border-4 border-slate-100" />
+                  <div className="absolute inset-0 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
+                  <div className="absolute inset-2 rounded-full border-4 border-purple-400 border-b-transparent animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
+                  <div className="absolute inset-4 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center">
+                    <Sparkles className="w-6 h-6 text-white animate-pulse" />
+                  </div>
+                </div>
+
+                <h3 className="text-xl font-bold text-slate-900 mb-2">AI 正在深度分析</h3>
+                <p className="text-slate-500 text-sm mb-6">正在从保险条款中提取关键信息...</p>
+
+                {/* 进度步骤 */}
+                <div className="space-y-3 text-left bg-slate-50 rounded-2xl p-4">
+                  <LoadingStep icon="✓" text="产品信息已匹配" done />
+                  <LoadingStep icon="✓" text="条款内容已检索" done />
+                  <LoadingStep icon="⏳" text="AI 正在分析核心保障..." active />
+                  <LoadingStep icon="○" text="生成销售话术" />
+                  <LoadingStep icon="○" text="整合结果" />
+                </div>
+
+                <p className="text-xs text-slate-400 mt-4">首次分析约需 30-60 秒，后续将从缓存快速获取</p>
               </div>
             </div>
           )}
@@ -386,7 +521,12 @@ export default function App() {
                 <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-50 text-blue-600 text-xs font-bold uppercase tracking-wider mb-4">
                   <CheckCircle2 className="w-4 h-4" /> Verified Analysis
                 </div>
-                <h2 className="text-4xl md:text-5xl font-bold text-slate-900 mb-8">{result.productName}</h2>
+                <h2 className="text-4xl md:text-5xl font-bold text-slate-900 mb-8">
+                  {typeof result.productName === 'string' ? result.productName : result.productName?.value}
+                  {typeof result.productName === 'object' && result.productName?.sourceClauseId && (
+                    <CitationBadge clauseId={result.productName.sourceClauseId} clauseMap={result.clauseMap} />
+                  )}
+                </h2>
               </div>
 
               {/* 卡片布局 */}
@@ -398,7 +538,12 @@ export default function App() {
                     <BookOpen className="w-6 h-6" />
                     <h3 className="font-bold text-lg text-slate-900">核心分析</h3>
                   </div>
-                  <p className="text-slate-600 leading-relaxed text-lg">{result.overview}</p>
+                  <p className="text-slate-600 leading-relaxed text-lg">
+                    {typeof result.overview === 'string' ? result.overview : result.overview?.value}
+                    {typeof result.overview === 'object' && result.overview?.sourceClauseId && (
+                      <CitationBadge clauseId={result.overview.sourceClauseId} clauseMap={result.clauseMap} />
+                    )}
+                  </p>
                 </div>
 
                 {/* 适合人群 (深色突显) */}
@@ -408,7 +553,10 @@ export default function App() {
                     <h3 className="text-xl font-bold">适用人群</h3>
                   </div>
                   <p className="text-slate-300 text-lg leading-relaxed font-light">
-                    {result.targetAudience}
+                    {typeof result.targetAudience === 'string' ? result.targetAudience : result.targetAudience?.value}
+                    {typeof result.targetAudience === 'object' && result.targetAudience?.sourceClauseId && (
+                      <CitationBadge clauseId={result.targetAudience.sourceClauseId} clauseMap={result.clauseMap} dark />
+                    )}
                   </p>
                 </div>
 
@@ -421,7 +569,12 @@ export default function App() {
                   <div className="grid md:grid-cols-3 gap-6">
                     {result.coreCoverage.map((item, idx) => (
                       <div key={idx} className="p-6 rounded-2xl bg-slate-50 hover:bg-blue-50/50 transition-colors border border-transparent hover:border-blue-100">
-                        <div className="text-2xl font-bold text-slate-900 mb-2">{item.value}</div>
+                        <div className="text-2xl font-bold text-slate-900 mb-2">
+                          {item.value}
+                          {item.sourceClauseId && (
+                            <CitationBadge clauseId={item.sourceClauseId} clauseMap={result.clauseMap} />
+                          )}
+                        </div>
                         <div className="text-xs font-bold text-blue-600 uppercase tracking-widest mb-3">{item.title}</div>
                         <div className="text-sm text-slate-600 leading-relaxed">{item.desc}</div>
                       </div>
@@ -455,7 +608,12 @@ export default function App() {
                     {result.exclusions.map((item, idx) => (
                       <li key={idx} className="flex gap-3 text-slate-600 text-sm">
                         <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-2 shrink-0" />
-                        {item}
+                        <span>
+                          {typeof item === 'string' ? item : item.value}
+                          {typeof item === 'object' && item.sourceClauseId && (
+                            <CitationBadge clauseId={item.sourceClauseId} clauseMap={result.clauseMap} />
+                          )}
+                        </span>
                       </li>
                     ))}
                   </ul>
