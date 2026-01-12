@@ -1,4 +1,5 @@
 import { embedText } from '@/lib/embeddings';
+import { QueryLogger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
@@ -18,13 +19,18 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY, baseURL: OPENAI_BASE_URL });
 // 来源信息类型
 type SourceInfo = { clauseId: number; productName: string | null };
 
+// 条款映射表（用于前端查询引用原文）
+type ClauseMap = Record<number, { snippet: string; productName: string | null }>;
+
 // 将检索到的条款整理成可控长度的上下文，避免超长
 function buildContext(
   rows: Array<{ id: number; product_id: number | null; content: string | null }>,
   productNames: Record<number, string>
-): { context: string; sources: SourceInfo[] } {
+): { context: string; sources: SourceInfo[]; clauseMap: ClauseMap } {
   const parts: string[] = [];
   const sources: SourceInfo[] = [];
+  const clauseMap: ClauseMap = {};
+
   for (const r of rows) {
     const name = r.product_id ? productNames[r.product_id] : null;
     const header = name ? `【产品】${name}  条款ID#${r.id}` : `条款ID#${r.id}`;
@@ -32,15 +38,70 @@ function buildContext(
     if (!content) continue;
     parts.push(`${header}\n${content}`);
     sources.push({ clauseId: r.id, productName: name });
+    // 保存到 clauseMap，截取前 2000 字作为 snippet（保留完整上下文）
+    clauseMap[r.id] = {
+      snippet: content.length > 2000 ? content.slice(0, 2000) + '...' : content,
+      productName: name
+    };
   }
   // 控制总长度，避免超过模型上下文限制（粗略按字符裁剪）
   let ctx = parts.join('\n\n---\n\n');
   const MAX_CHARS = 6000; // 约束在一个合理范围内
   if (ctx.length > MAX_CHARS) ctx = ctx.slice(0, MAX_CHARS);
-  return { context: ctx, sources };
+  return { context: ctx, sources, clauseMap };
 }
 
+// ========== 精细拒答策略 ==========
+
+// 检测无意义输入
+function isGibberish(query: string): { isGibberish: boolean; reason?: string } {
+  // 太短
+  if (query.length < 2) {
+    return { isGibberish: true, reason: '查询内容太短，请输入完整的产品名称或问题' };
+  }
+  // 纯数字
+  if (/^\d+$/.test(query)) {
+    return { isGibberish: true, reason: '请输入产品名称而非纯数字' };
+  }
+  // 纯英文字母且太短（允许如 "RAG" 等缩写）
+  if (/^[a-zA-Z]+$/.test(query) && query.length < 3) {
+    return { isGibberish: true, reason: '请输入完整的产品名称' };
+  }
+  // 纯ASCII符号（不包含中文、日文、韩文等 Unicode 字符）
+  // 只匹配纯标点符号：!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ 和空格
+  if (/^[\s\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]+$/.test(query)) {
+    return { isGibberish: true, reason: '请输入有效的产品名称或问题' };
+  }
+  // 重复字符（如 "aaaa"）
+  if (/^(.)\1{3,}$/.test(query)) {
+    return { isGibberish: true, reason: '请输入有效的产品名称或问题' };
+  }
+  return { isGibberish: false };
+}
+
+// ========== 缓存系统 ==========
+
+// 查询归一化（用于缓存键）
+function normalizeQuery(query: string): string {
+  return query
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[\s\u3000]+/g, '') // 移除所有空格
+    .replace(/[()（）［］【】\[\]·•．・。、，,._/:'""-]+/g, ''); // 移除标点
+}
+
+// 生成缓存哈希（简单版：直接用归一化文本）
+function getCacheKey(query: string): string {
+  return normalizeQuery(query);
+}
+
+// 相似度阈值
+const SIMILARITY_THRESHOLD = 0.3;
+
 export async function POST(req: Request) {
+  const startTime = Date.now();
+  const logger = new QueryLogger();
+
   try {
     if (!OPENAI_API_KEY) {
       return NextResponse.json({ error: '缺少 OPENAI_API_KEY' }, { status: 500 });
@@ -61,6 +122,58 @@ export async function POST(req: Request) {
 
     if (!query) {
       return NextResponse.json({ error: '缺少必填参数 query' }, { status: 400 });
+    }
+
+    // ========== 精细拒答：无意义输入检测 ==========
+    const gibberishCheck = isGibberish(query);
+    if (gibberishCheck.isGibberish) {
+      logger.setQuery(query);
+      logger.setRefusal(true, gibberishCheck.reason || 'GIBBERISH_INPUT');
+      logger.setDuration(Date.now() - startTime);
+      logger.save().catch(err => console.error('[Logger] Save failed:', err));
+
+      return NextResponse.json({
+        ok: false,
+        notFound: { query, reason: 'INVALID_INPUT', message: gibberishCheck.reason }
+      });
+    }
+
+    // 记录查询
+    logger.setQuery(query);
+    logger.setTopK(matchCount);
+
+    // ========== 缓存检查：查询 Supabase search_cache 表 ==========
+    // 通过环境变量控制缓存开关（默认关闭，需要先创建表）
+    const ENABLE_CACHE = process.env.ENABLE_SEARCH_CACHE === 'true';
+    const cacheKey = getCacheKey(query);
+    let cachedResult: { result: any; id: number; hit_count: number } | null = null;
+
+    if (ENABLE_CACHE) {
+      try {
+        const { data } = await supabase
+          .from('search_cache')
+          .select('result, id, hit_count')
+          .eq('query_hash', cacheKey)
+          .gt('expires_at', new Date().toISOString())
+          .maybeSingle();
+
+        cachedResult = data;
+      } catch (cacheReadErr) {
+        console.warn('[Cache] Read failed:', cacheReadErr);
+      }
+
+      if (cachedResult?.result) {
+        // 缓存命中
+        supabase
+          .from('search_cache')
+          .update({ hit_count: (cachedResult.hit_count || 0) + 1 })
+          .eq('id', cachedResult.id);
+
+        logger.setDuration(Date.now() - startTime);
+        logger.save().catch(err => console.error('[Logger] Save failed:', err));
+
+        return NextResponse.json({ ...cachedResult.result, _cached: true });
+      }
     }
 
     // ========== 新增：混合检索 - 产品名优先匹配 ==========
@@ -90,7 +203,9 @@ export async function POST(req: Request) {
     // ========== 混合检索结束 ==========
 
     // 1) 生成查询向量 - 使用多模态 API
+    const embeddingStart = Date.now();
     const queryEmbedding = await embedText(query, { model: EMBEDDING_MODEL });
+    logger.setEmbeddingDuration(Date.now() - embeddingStart);
 
 
     // 2) 调用 Supabase 向量匹配函数
@@ -128,6 +243,9 @@ export async function POST(req: Request) {
       rows = rows.slice(0, matchCount);
     }
     // ========== 过滤 + 重排序结束 ==========
+
+    // 记录检索结果
+    logger.setRetrievedChunks(rows);
 
     let usedFallback = false;
 
@@ -176,16 +294,42 @@ export async function POST(req: Request) {
       }, {});
     }
 
-    const { context, sources } = buildContext(rows, productNames);
+    const { context, sources, clauseMap } = buildContext(rows, productNames);
 
-    // 3) 让模型按固定 JSON 模板抽取结构化信息
+    // 3) 让模型按固定 JSON 模板抽取结构化信息（带字段级引用）
     // 使用 JSON 模式尽量保证只返回 JSON
-    const sysPrompt = `你是一个保险信息抽取助手。请基于“条款上下文”和“用户问题”，提取并汇总该保险产品的关键信息。严格要求：\n- 只能输出纯 JSON（application/json），不要任何多余文本或 Markdown。\n- 严格使用以下字段，缺失则给空字符串或空数组，绝不编造：\n{\n  'productName': string,\n  'overview': string,\n  'coreCoverage': Array<{ title: string, value: string, desc: string }>,\n  'exclusions': string[],\n  'targetAudience': string,\n  'salesScript': string[],\n  'rawTerms': string\n}\n- coreCoverage 中 title/value/desc 均需简洁明确；\n- exclusions 列出与免责/除外相关的要点；\n- salesScript 给出 2-5 条对用户解释/劝服的简短话术；\n- rawTerms 填写你引用的原始条款片段（可拼接多条，尽量贴近原文）。\n- 如果上下文没有相关信息，请留空，不要臆造。`;
+    const sysPrompt = `你是一个保险信息抽取助手。请基于"条款上下文"和"用户问题"，提取并汇总该保险产品的关键信息。
+
+**严格要求**：
+1. 只能输出纯 JSON（application/json），不要任何多余文本或 Markdown。
+2. 每个字段都必须标注来源条款ID（sourceClauseId），如果无法确定来源则填 null。
+3. 条款ID格式为"条款ID#数字"，请提取其中的数字作为 sourceClauseId。
+4. 严格使用以下结构，缺失则给空字符串/空数组/null，绝不编造：
+
+{
+  "productName": { "value": string, "sourceClauseId": number | null },
+  "overview": { "value": string, "sourceClauseId": number | null },
+  "coreCoverage": [{ "title": string, "value": string, "desc": string, "sourceClauseId": number | null }],
+  "exclusions": [{ "value": string, "sourceClauseId": number | null }],
+  "targetAudience": { "value": string, "sourceClauseId": number | null },
+  "salesScript": string[],
+  "rawTerms": string
+}
+
+**字段说明**：
+- coreCoverage: 核心保障责任，title/value/desc 均需简洁明确
+- exclusions: 与免责/除外相关的要点
+- salesScript: 2-5 条对用户解释/劝服的简短话术（AI生成，无需引用）
+- rawTerms: 你引用的原始条款片段（可拼接多条，尽量贴近原文）
+
+**重要**：如果上下文没有相关信息，请留空或填null，不要臆造。`;
 
     const userPrompt = `用户问题：\n${query}\n\n条款上下文：\n${context}\n\n请输出严格符合上述要求的 JSON。`;
 
     const debug = Boolean(body?.debug);
 
+    // LLM调用
+    const llmStart = Date.now();
     const chat = await openai.chat.completions.create({
       model: GENERATION_MODEL,
       temperature: 0.2,
@@ -195,6 +339,12 @@ export async function POST(req: Request) {
         { role: 'user', content: userPrompt },
       ],
     });
+    logger.setLLMDuration(Date.now() - llmStart);
+
+    // 记录token使用
+    const promptTokens = chat.usage?.prompt_tokens || 0;
+    const completionTokens = chat.usage?.completion_tokens || 0;
+    logger.setTokensUsed(promptTokens, completionTokens);
 
     const text = chat.choices?.[0]?.message?.content?.trim() || '';
 
@@ -226,12 +376,45 @@ export async function POST(req: Request) {
       } catch { }
     }
 
-    // 添加来源信息
+    // 添加来源信息和条款映射表
     jsonOut.sources = sources;
+    jsonOut.clauseMap = clauseMap;
+
+    // 记录产品名和总耗时（兼容新旧格式）
+    const productNameValue = jsonOut.productName?.value || jsonOut.productName || null;
+    logger.setProductMatched(productNameValue);
+    logger.setRefusal(false, null);
+    logger.setDuration(Date.now() - startTime);
+
+    // 保存日志（异步，不阻塞响应）
+    logger.save().catch(err => console.error('[Logger] Save failed:', err));
+
+    // ========== 写入缓存：保存到 Supabase search_cache 表 ==========
+    if (ENABLE_CACHE) {
+      const cacheExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24小时后过期
+      try {
+        await supabase
+          .from('search_cache')
+          .upsert({
+            query_hash: cacheKey,
+            query_text: query,
+            result: jsonOut,
+            expires_at: cacheExpiry,
+            hit_count: 0
+          }, { onConflict: 'query_hash' });
+      } catch (cacheErr) {
+        console.error('[Cache] Write failed:', cacheErr);
+      }
+    }
 
     // 最终只返回结构化对象（不包裹 ok 字段，符合你的要求）
     return NextResponse.json(jsonOut);
   } catch (e: any) {
+    // 记录错误并保存日志
+    logger.setRefusal(true, e?.message || 'Internal Error');
+    logger.setDuration(Date.now() - startTime);
+    logger.save().catch(err => console.error('[Logger] Save failed:', err));
+
     return NextResponse.json({ error: e?.message || 'Internal Error' }, { status: 500 });
   }
 }
