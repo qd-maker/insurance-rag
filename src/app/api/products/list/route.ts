@@ -34,6 +34,11 @@ export async function GET() {
             .select(`
                 id, 
                 name,
+                description,
+                is_active,
+                created_at,
+                updated_at,
+                created_by,
                 clauses(count)
             `)
             .order('id');
@@ -63,6 +68,11 @@ export async function GET() {
                 return {
                     id: p.id,
                     name: p.name,
+                    description: p.description || null,
+                    is_active: p.is_active !== false,  // 默认为 true
+                    created_at: p.created_at || null,
+                    updated_at: p.updated_at || null,
+                    created_by: p.created_by || null,
                     aliases: aliasInfo.aliases || [],
                     version: aliasInfo.version || '未知版本',
                     last_updated: aliasInfo.last_updated || '未知',

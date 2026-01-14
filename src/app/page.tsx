@@ -30,6 +30,7 @@ type Product = {
   version: string;
   last_updated: string;
   source: string;
+  is_active?: boolean;  // 产品启用状态
 };
 
 type SourceInfo = { clauseId: number; productName: string | null };
@@ -39,6 +40,33 @@ type CitedField = { value: string; sourceClauseId: number | null };
 
 // 条款映射表
 type ClauseMap = Record<number, { snippet: string; productName: string | null }>;
+
+// ==================== Fallback 处理 ====================
+
+const FALLBACK_MARKER = '[条款未说明]';
+const FALLBACK_DISPLAY = '条款中未明确说明，请以核保或公司规则为准';
+
+// 检测值是否为 fallback
+function isFallback(value: string | undefined | null): boolean {
+  if (!value) return true;
+  return value === FALLBACK_MARKER || value.includes(FALLBACK_MARKER);
+}
+
+// 渲染带有 fallback 处理的文本
+function renderWithFallback(
+  value: string | undefined | null,
+  fallbackText: string = FALLBACK_DISPLAY,
+  className?: string
+): React.ReactNode {
+  if (isFallback(value)) {
+    return (
+      <span className={`italic text-amber-600 ${className || ''}`}>
+        ⚠️ {fallbackText}
+      </span>
+    );
+  }
+  return value;
+}
 
 type SearchResult = {
   productName: CitedField;
@@ -218,8 +246,11 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // 过滤建议产品
+  // 过滤建议产品（排除禁用产品）
   const filteredProducts = products.filter(p => {
+    // 排除禁用的产品
+    if (p.is_active === false) return false;
+
     const searchLower = productSearch.toLowerCase().trim();
     if (!searchLower) return true;
     return (
@@ -342,7 +373,7 @@ export default function App() {
       if (logoClickTimer.current) {
         clearTimeout(logoClickTimer.current);
       }
-      router.push('/admin/add-product');
+      router.push('/admin/products');
     }
   }
 
@@ -436,11 +467,6 @@ export default function App() {
                     >
                       <div>
                         <div className="text-slate-900 font-medium group-hover/item:text-blue-600 transition-colors">{product.name}</div>
-                        {product.aliases.length > 0 && (
-                          <div className="text-xs text-slate-400 mt-1">
-                            {product.aliases.join(' / ')}
-                          </div>
-                        )}
                       </div>
                       {selectedProduct?.id === product.id && <CheckCircle2 className="w-5 h-5 text-blue-600" />}
                     </button>
@@ -539,8 +565,10 @@ export default function App() {
                     <h3 className="font-bold text-lg text-slate-900">核心分析</h3>
                   </div>
                   <p className="text-slate-600 leading-relaxed text-lg">
-                    {typeof result.overview === 'string' ? result.overview : result.overview?.value}
-                    {typeof result.overview === 'object' && result.overview?.sourceClauseId && (
+                    {renderWithFallback(
+                      typeof result.overview === 'string' ? result.overview : result.overview?.value
+                    )}
+                    {typeof result.overview === 'object' && result.overview?.sourceClauseId && !isFallback(result.overview?.value) && (
                       <CitationBadge clauseId={result.overview.sourceClauseId} clauseMap={result.clauseMap} />
                     )}
                   </p>
@@ -553,8 +581,12 @@ export default function App() {
                     <h3 className="text-xl font-bold">适用人群</h3>
                   </div>
                   <p className="text-slate-300 text-lg leading-relaxed font-light">
-                    {typeof result.targetAudience === 'string' ? result.targetAudience : result.targetAudience?.value}
-                    {typeof result.targetAudience === 'object' && result.targetAudience?.sourceClauseId && (
+                    {renderWithFallback(
+                      typeof result.targetAudience === 'string' ? result.targetAudience : result.targetAudience?.value,
+                      FALLBACK_DISPLAY,
+                      'text-amber-400'
+                    )}
+                    {typeof result.targetAudience === 'object' && result.targetAudience?.sourceClauseId && !isFallback(result.targetAudience?.value) && (
                       <CitationBadge clauseId={result.targetAudience.sourceClauseId} clauseMap={result.clauseMap} dark />
                     )}
                   </p>
@@ -570,13 +602,13 @@ export default function App() {
                     {result.coreCoverage.map((item, idx) => (
                       <div key={idx} className="p-6 rounded-2xl bg-slate-50 hover:bg-blue-50/50 transition-colors border border-transparent hover:border-blue-100">
                         <div className="text-2xl font-bold text-slate-900 mb-2">
-                          {item.value}
-                          {item.sourceClauseId && (
+                          {renderWithFallback(item.value)}
+                          {item.sourceClauseId && !isFallback(item.value) && (
                             <CitationBadge clauseId={item.sourceClauseId} clauseMap={result.clauseMap} />
                           )}
                         </div>
                         <div className="text-xs font-bold text-blue-600 uppercase tracking-widest mb-3">{item.title}</div>
-                        <div className="text-sm text-slate-600 leading-relaxed">{item.desc}</div>
+                        <div className="text-sm text-slate-600 leading-relaxed">{renderWithFallback(item.desc)}</div>
                       </div>
                     ))}
                   </div>
@@ -605,17 +637,20 @@ export default function App() {
                     <h3 className="font-bold text-lg">责任免除</h3>
                   </div>
                   <ul className="space-y-3">
-                    {result.exclusions.map((item, idx) => (
-                      <li key={idx} className="flex gap-3 text-slate-600 text-sm">
-                        <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-2 shrink-0" />
-                        <span>
-                          {typeof item === 'string' ? item : item.value}
-                          {typeof item === 'object' && item.sourceClauseId && (
-                            <CitationBadge clauseId={item.sourceClauseId} clauseMap={result.clauseMap} />
-                          )}
-                        </span>
-                      </li>
-                    ))}
+                    {result.exclusions.map((item, idx) => {
+                      const itemValue = typeof item === 'string' ? item : item.value;
+                      return (
+                        <li key={idx} className="flex gap-3 text-slate-600 text-sm">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-2 shrink-0" />
+                          <span>
+                            {renderWithFallback(itemValue)}
+                            {typeof item === 'object' && item.sourceClauseId && !isFallback(itemValue) && (
+                              <CitationBadge clauseId={item.sourceClauseId} clauseMap={result.clauseMap} />
+                            )}
+                          </span>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
 

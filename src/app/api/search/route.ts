@@ -81,18 +81,20 @@ function isGibberish(query: string): { isGibberish: boolean; reason?: string } {
 
 // ========== 缓存系统 ==========
 
-// 查询归一化（用于缓存键）
-function normalizeQuery(query: string): string {
-  return query
+// 产品名归一化（用于缓存键和产品匹配）
+function normalizeProductName(name: string): string {
+  return name
     .toLowerCase()
     .normalize('NFKC')
-    .replace(/[\s\u3000]+/g, '') // 移除所有空格
+    .replace(/[\s\u3000]/g, '') // 移除空格
     .replace(/[()（）［］【】\[\]·•．・。、，,._/:'""-]+/g, ''); // 移除标点
 }
 
-// 生成缓存哈希（简单版：直接用归一化文本）
-function getCacheKey(query: string): string {
-  return normalizeQuery(query);
+// 生成缓存键（简化版：只用产品名）
+// ⚠️ 业务场景：用户选择产品 → 生成信息卡片
+// 缓存键 = 产品名，不包含query（因为用户不输入问题）
+function getCacheKey(productName: string): string {
+  return normalizeProductName(productName);
 }
 
 // 相似度阈值
@@ -143,12 +145,38 @@ export async function POST(req: Request) {
     logger.setTopK(matchCount);
 
     // ========== 缓存检查：查询 Supabase search_cache 表 ==========
-    // 通过环境变量控制缓存开关（默认关闭，需要先创建表）
+    // ⚠️ 业务逻辑：用户选择产品 → 生成信息卡片
+    // 缓存策略：以产品名为键，缓存整个信息卡片
     const ENABLE_CACHE = process.env.ENABLE_SEARCH_CACHE === 'true';
-    const cacheKey = getCacheKey(query);
+    let cacheKey: string | null = null;
     let cachedResult: { result: any; id: number; hit_count: number } | null = null;
 
-    if (ENABLE_CACHE) {
+    // ========== 新增：混合检索 - 产品名优先匹配 ==========
+    // 0) 优先检查产品名是否直接匹配（只查询启用的产品）
+    const queryNorm = normalizeProductName(query);
+    const { data: allProducts } = await supabase
+      .from('products')
+      .select('id, name')
+      .eq('is_active', true);  // 只查询启用的产品
+
+    let priorityProductIds: number[] = [];
+    let matchedProductName: string | null = null;
+
+    for (const p of allProducts || []) {
+      const nameNorm = normalizeProductName(p.name);
+      // 双向包含检查：查询包含产品名 或 产品名包含查询
+      if (nameNorm.includes(queryNorm) || queryNorm.includes(nameNorm)) {
+        priorityProductIds.push(p.id);
+        if (!matchedProductName) {
+          matchedProductName = p.name; // 记录第一个匹配的产品名
+        }
+      }
+    }
+
+    // ⚠️ 如果检测到产品名，生成缓存键并检查缓存
+    if (matchedProductName && ENABLE_CACHE) {
+      cacheKey = getCacheKey(matchedProductName);
+
       try {
         const { data } = await supabase
           .from('search_cache')
@@ -173,31 +201,6 @@ export async function POST(req: Request) {
         logger.save().catch(err => console.error('[Logger] Save failed:', err));
 
         return NextResponse.json({ ...cachedResult.result, _cached: true });
-      }
-    }
-
-    // ========== 新增：混合检索 - 产品名优先匹配 ==========
-    // 归一化函数（与 products/check 保持一致）
-    function normalizeProductName(name: string): string {
-      return name
-        .toLowerCase()
-        .normalize('NFKC')
-        .replace(/[\s\u3000]/g, '')
-        .replace(/[()（）［］【】\[\]·•．・。、，,._/:'""-]+/g, '');
-    }
-
-    // 0) 优先检查产品名是否直接匹配
-    const queryNorm = normalizeProductName(query);
-    const { data: allProducts } = await supabase
-      .from('products')
-      .select('id, name');
-
-    let priorityProductIds: number[] = [];
-    for (const p of allProducts || []) {
-      const nameNorm = normalizeProductName(p.name);
-      // 双向包含检查：查询包含产品名 或 产品名包含查询
-      if (nameNorm.includes(queryNorm) || queryNorm.includes(nameNorm)) {
-        priorityProductIds.push(p.id);
       }
     }
     // ========== 混合检索结束 ==========
@@ -304,7 +307,7 @@ export async function POST(req: Request) {
 1. 只能输出纯 JSON（application/json），不要任何多余文本或 Markdown。
 2. 每个字段都必须标注来源条款ID（sourceClauseId），如果无法确定来源则填 null。
 3. 条款ID格式为"条款ID#数字"，请提取其中的数字作为 sourceClauseId。
-4. 严格使用以下结构，缺失则给空字符串/空数组/null，绝不编造：
+4. 严格使用以下结构，绝不编造：
 
 {
   "productName": { "value": string, "sourceClauseId": number | null },
@@ -322,7 +325,13 @@ export async function POST(req: Request) {
 - salesScript: 2-5 条对用户解释/劝服的简短话术（AI生成，无需引用）
 - rawTerms: 你引用的原始条款片段（可拼接多条，尽量贴近原文）
 
-**重要**：如果上下文没有相关信息，请留空或填null，不要臆造。`;
+**Fallback 规则（极其重要）**：
+如果条款上下文中没有明确说明某个字段的信息，你必须：
+- 对于 value 字段：填入 "[条款未说明]"（精确使用此标记）
+- 对于 sourceClauseId：填入 null
+- 绝对禁止编造、推测或使用通用描述
+
+示例：如果条款未提及目标人群，则 targetAudience 应为 { "value": "[条款未说明]", "sourceClauseId": null }`;
 
     const userPrompt = `用户问题：\n${query}\n\n条款上下文：\n${context}\n\n请输出严格符合上述要求的 JSON。`;
 
@@ -390,14 +399,16 @@ export async function POST(req: Request) {
     logger.save().catch(err => console.error('[Logger] Save failed:', err));
 
     // ========== 写入缓存：保存到 Supabase search_cache 表 ==========
-    if (ENABLE_CACHE) {
+    // ⚠️ 业务场景：用户选择产品 → 缓存该产品的信息卡片
+    // 缓存键 = 产品名（归一化）
+    if (ENABLE_CACHE && productNameValue && cacheKey) {
       const cacheExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24小时后过期
       try {
         await supabase
           .from('search_cache')
           .upsert({
             query_hash: cacheKey,
-            query_text: query,
+            query_text: productNameValue, // ⚠️ 存储产品名，不是query
             result: jsonOut,
             expires_at: cacheExpiry,
             hit_count: 0

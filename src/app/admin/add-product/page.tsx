@@ -52,12 +52,20 @@ export default function AddProductPage() {
     const [steps, setSteps] = useState<Step[]>([]);
     const [results, setResults] = useState<ApiResponse['results']>(undefined);
 
+    // 从 sessionStorage 获取 token（与 /admin/products 共享）
+    React.useEffect(() => {
+        const savedToken = sessionStorage.getItem('admin_token');
+        if (savedToken) {
+            setToken(savedToken);
+        }
+    }, []);
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
         if (!token.trim()) {
             setStatus('error');
-            setMessage('请输入管理员 Token');
+            setMessage('认证已过期，请返回产品管理页面重新验证');
             return;
         }
 
@@ -164,35 +172,8 @@ export default function AddProductPage() {
                     </p>
                 </div>
 
-                {/* 警告提示 */}
-                <div className="mb-8 p-4 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3">
-                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                    <div className="text-sm text-amber-800">
-                        <p className="font-medium mb-1">安全提示</p>
-                        <p className="text-amber-700">
-                            此功能仅限授权人员使用。请妥善保管您的管理员 Token。
-                        </p>
-                    </div>
-                </div>
-
                 {/* 表单 */}
                 <form onSubmit={handleSubmit} className="space-y-6">
-                    {/* Token 输入 */}
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">
-                            <Lock className="w-4 h-4 inline mr-1" />
-                            管理员 Token
-                        </label>
-                        <input
-                            type="password"
-                            value={token}
-                            onChange={(e) => setToken(e.target.value)}
-                            placeholder="请输入授权 Token"
-                            disabled={status === 'loading'}
-                            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all text-slate-900 placeholder:text-slate-400 disabled:bg-slate-100"
-                        />
-                    </div>
-
                     {/* 产品名称 */}
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -253,9 +234,9 @@ export default function AddProductPage() {
                                 <div key={idx} className="flex items-start gap-4">
                                     {/* 图标 */}
                                     <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${step.status === 'done' ? 'bg-green-100 text-green-600' :
-                                            step.status === 'running' ? 'bg-blue-100 text-blue-600' :
-                                                step.status === 'error' ? 'bg-red-100 text-red-600' :
-                                                    'bg-slate-100 text-slate-400'
+                                        step.status === 'running' ? 'bg-blue-100 text-blue-600' :
+                                            step.status === 'error' ? 'bg-red-100 text-red-600' :
+                                                'bg-slate-100 text-slate-400'
                                         }`}>
                                         {step.status === 'done' ? (
                                             <CheckCircle2 className="w-5 h-5" />
@@ -271,9 +252,9 @@ export default function AddProductPage() {
                                     {/* 内容 */}
                                     <div className="flex-1 pt-2">
                                         <div className={`font-medium ${step.status === 'done' ? 'text-green-700' :
-                                                step.status === 'running' ? 'text-blue-700' :
-                                                    step.status === 'error' ? 'text-red-700' :
-                                                        'text-slate-400'
+                                            step.status === 'running' ? 'text-blue-700' :
+                                                step.status === 'error' ? 'text-red-700' :
+                                                    'text-slate-400'
                                             }`}>
                                             {step.step}
                                         </div>
