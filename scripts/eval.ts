@@ -1,209 +1,319 @@
+/**
+ * RAG 生产级评估脚本 (简化版)
+ * 
+ * 业务场景: 用户选择产品 → 系统提取完整信息卡片
+ * 
+ * 评估重点:
+ * - 信息完整性: 所有必填字段是否存在
+ * - 引用覆盖率: 所有字段是否有sourceClauseId
+ * - 稳定性: 同一产品多次查询结果一致性
+ * 
+ * 用法: npx tsx scripts/eval.ts
+ */
+
 import fs from 'fs';
 import path from 'path';
 import { parse } from 'csv-parse/sync';
 
-interface EvalCase {
+// ============================================================
+// 类型定义
+// ============================================================
+
+interface TestCase {
     id: string;
-    group: string;
-    plan_input: string;
-    question: string;
-    expected_plan: string;
-    should_refuse: string;
+    product_name: string;
+    test_type: 'complete' | 'stability';
     notes: string;
 }
 
-interface EvalMetrics {
-    total: number;
-    group_a_accuracy: number; // 精确输入准确率
-    group_b_accuracy: number; // 模糊输入准确率
-    group_c_refusal_accuracy: number; // 拒答准确率
-    overall_accuracy: number;
-    citation_completeness: number;
+interface APIResponse {
+    productName?: { value: string; sourceClauseId: number | null } | string;
+    overview?: { value: string; sourceClauseId: number | null } | string;
+    coreCoverage?: { title: string; value: string; desc: string; sourceClauseId: number | null }[];
+    exclusions?: { value: string; sourceClauseId: number | null }[];
+    targetAudience?: { value: string; sourceClauseId: number | null } | string;
+    salesScript?: string[];
+    sources?: { clauseId: number; productName: string | null }[];
+    clauseMap?: Record<number, { snippet: string; productName: string | null }>;
+    notFound?: { query: string; reason: string };
+    error?: string;
 }
 
 interface EvalResult {
     case_id: string;
-    group: string;
-    query: string;
-    expected: string;
-    should_refuse: boolean;
-    actual_product: string | null;
-    actual_refused: boolean;
-    has_citations: boolean;
+    product_name: string;
+    test_type: string;
+    has_error: boolean;
+    error_message?: string;
+    // 信息完整性
+    has_product_name: boolean;
+    has_overview: boolean;
+    has_core_coverage: boolean;
+    has_exclusions: boolean;
+    has_target_audience: boolean;
+    has_sales_script: boolean;
+    // 引用覆盖率
+    product_name_cited: boolean;
+    overview_cited: boolean;
+    core_coverage_cited: boolean;
+    exclusions_cited: boolean;
+    target_audience_cited: boolean;
+    // 整体评分
+    completeness_score: number;
+    citation_score: number;
     pass: boolean;
     reason: string;
 }
 
-async function queryAPI(planInput: string, question: string): Promise<any> {
-    const API_URL = process.env.API_URL || 'http://localhost:3000/api/search';
+interface EvalMetrics {
+    total: number;
+    // 信息完整性
+    avg_completeness_score: number;
+    // 引用覆盖率
+    avg_citation_score: number;
+    // 稳定性
+    stability_pass_rate: number;
+    // 整体
+    overall_pass_rate: number;
+}
 
+// ============================================================
+// 配置
+// ============================================================
+
+const API_URL = process.env.API_URL || 'http://localhost:3000/api/search';
+const REQUEST_DELAY_MS = 500;
+
+// 稳定性测试缓存
+const stabilityCache = new Map<string, APIResponse>();
+
+// ============================================================
+// 核心函数
+// ============================================================
+
+async function queryAPI(productName: string): Promise<APIResponse | null> {
     try {
-        const response = await fetch(API_URL, {
+        const res = await fetch(API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                query: `【${planInput}】${question}`,
-                matchCount: 5,
-                matchThreshold: 0.1,
-            }),
+            body: JSON.stringify({ query: productName, matchCount: 10, matchThreshold: 0.1 }),
         });
 
-        if (!response.ok) {
-            throw new Error(`API returned ${response.status}`);
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
         }
 
-        return await response.json();
-    } catch (error) {
-        console.error(`[Eval] API call failed:`, error);
+        return await res.json();
+    } catch (err: any) {
+        console.error(`[Eval] API call failed:`, err.message);
         return null;
     }
 }
 
-function normalizeProductName(name: string): string {
-    return name
-        .toLowerCase()
-        .normalize('NFKC')
-        .replace(/[\s\u3000]/g, '')
-        .replace(/[()（）［］【】\[\]·•．・。、，,._/:'""-]+/g, '');
+function checkFieldExists(response: APIResponse, fieldName: string): boolean {
+    const field = (response as any)[fieldName];
+    if (!field) return false;
+
+    if (Array.isArray(field)) {
+        return field.length > 0;
+    }
+
+    if (typeof field === 'object' && field.value) {
+        return field.value.length > 0 && field.value !== '[条款未说明]';
+    }
+
+    return false;
 }
 
-function evaluateCase(
-    testCase: EvalCase,
-    apiResponse: any
-): EvalResult {
-    const shouldRefuse = testCase.should_refuse === '1';
-    const expectedProduct = testCase.expected_plan;
+function checkFieldCited(response: APIResponse, fieldName: string): boolean {
+    const field = (response as any)[fieldName];
+    if (!field) return false;
 
-    // 检查是否拒答
-    const actualRefused =
-        apiResponse?.error ||
-        apiResponse?.notFound ||
-        apiResponse?.shouldRefuse ||
-        !apiResponse?.productName;
+    if (Array.isArray(field)) {
+        // 数组类型,检查是否至少有一个元素有sourceClauseId
+        return field.some((item: any) =>
+            typeof item === 'object' && item.sourceClauseId != null
+        );
+    } else if (typeof field === 'object' && 'sourceClauseId' in field) {
+        return field.sourceClauseId != null;
+    }
+
+    return false;
+}
+
+function evaluateCase(testCase: TestCase, apiResponse: APIResponse | null): EvalResult {
+    const result: EvalResult = {
+        case_id: testCase.id,
+        product_name: testCase.product_name,
+        test_type: testCase.test_type,
+        has_error: false,
+        error_message: undefined,
+        has_product_name: false,
+        has_overview: false,
+        has_core_coverage: false,
+        has_exclusions: false,
+        has_target_audience: false,
+        has_sales_script: false,
+        product_name_cited: false,
+        overview_cited: false,
+        core_coverage_cited: false,
+        exclusions_cited: false,
+        target_audience_cited: false,
+        completeness_score: 0,
+        citation_score: 0,
+        pass: false,
+        reason: '',
+    };
+
+    if (!apiResponse || apiResponse.error || apiResponse.notFound) {
+        result.has_error = true;
+        result.error_message = apiResponse?.error || (apiResponse?.notFound ? 'NOT_FOUND' : 'API_ERROR');
+        result.reason = '❌ API错误或未找到';
+        return result;
+    }
+
+    // 检查字段存在性
+    result.has_product_name = checkFieldExists(apiResponse, 'productName');
+    result.has_overview = checkFieldExists(apiResponse, 'overview');
+    result.has_core_coverage = checkFieldExists(apiResponse, 'coreCoverage');
+    result.has_exclusions = checkFieldExists(apiResponse, 'exclusions');
+    result.has_target_audience = checkFieldExists(apiResponse, 'targetAudience');
+    result.has_sales_script = checkFieldExists(apiResponse, 'salesScript');
 
     // 检查引用
-    const hasCitations =
-        apiResponse?.sources?.length > 0 ||
-        apiResponse?.citations?.length > 0;
+    result.product_name_cited = checkFieldCited(apiResponse, 'productName');
+    result.overview_cited = checkFieldCited(apiResponse, 'overview');
+    result.core_coverage_cited = checkFieldCited(apiResponse, 'coreCoverage');
+    result.exclusions_cited = checkFieldCited(apiResponse, 'exclusions');
+    result.target_audience_cited = checkFieldCited(apiResponse, 'targetAudience');
 
-    let pass = false;
-    let reason = '';
+    // 计算完整性得分 (必填字段: productName, overview, coreCoverage, exclusions, targetAudience)
+    const requiredFields = [
+        result.has_product_name,
+        result.has_overview,
+        result.has_core_coverage,
+        result.has_exclusions,
+        result.has_target_audience,
+    ];
+    result.completeness_score = (requiredFields.filter(Boolean).length / requiredFields.length) * 100;
 
-    if (shouldRefuse) {
-        // Group C：应该拒答的场景
-        pass = actualRefused;
-        reason = pass
-            ? '✅ 正确拒答'
-            : `❌ 应拒答但返回了结果: ${apiResponse?.productName}`;
-    } else {
-        // Group A/B：应该正确识别产品
-        if (actualRefused) {
-            pass = false;
-            reason = '❌ 不应拒答但拒答了';
+    // 计算引用得分 (salesScript不需要引用)
+    const citedFields = [
+        result.product_name_cited,
+        result.overview_cited,
+        result.core_coverage_cited,
+        result.exclusions_cited,
+        result.target_audience_cited,
+    ];
+    result.citation_score = (citedFields.filter(Boolean).length / citedFields.length) * 100;
+
+    // 判断是否通过
+    if (testCase.test_type === 'complete') {
+        // 完整性测试: 完整性≥80% 且 引用率≥80%
+        result.pass = result.completeness_score >= 80 && result.citation_score >= 80;
+        result.reason = result.pass
+            ? `✅ 完整性${result.completeness_score.toFixed(0)}% 引用率${result.citation_score.toFixed(0)}%`
+            : `❌ 完整性${result.completeness_score.toFixed(0)}% 引用率${result.citation_score.toFixed(0)}%`;
+    } else if (testCase.test_type === 'stability') {
+        // 稳定性测试: 结果一致性
+        const cacheKey = testCase.product_name;
+        const cached = stabilityCache.get(cacheKey);
+
+        if (!cached) {
+            // 第一次查询,缓存结果
+            stabilityCache.set(cacheKey, apiResponse);
+            result.pass = result.completeness_score >= 80;
+            result.reason = result.pass ? '✅ 首次查询成功' : '❌ 首次查询失败';
         } else {
-            const actualProduct = apiResponse?.productName || '';
-            const expectedNorm = normalizeProductName(expectedProduct);
-            const actualNorm = normalizeProductName(actualProduct);
+            // 对比结果一致性 (只对比核心字段)
+            const currentProductName = apiResponse.productName?.value || apiResponse.productName;
+            const cachedProductName = cached.productName?.value || cached.productName;
+            const isConsistent = currentProductName === cachedProductName;
 
-            const productMatch =
-                actualNorm.includes(expectedNorm) || expectedNorm.includes(actualNorm);
-
-            pass = productMatch && hasCitations;
-
-            if (!productMatch) {
-                reason = `❌ 产品不匹配: 期望"${expectedProduct}", 实际"${actualProduct}"`;
-            } else if (!hasCitations) {
-                reason = '❌ 缺少引用来源';
-            } else {
-                reason = '✅ 产品匹配且有引用';
-            }
+            result.pass = isConsistent;
+            result.reason = isConsistent ? '✅ 结果一致' : '❌ 结果不一致';
         }
     }
 
+    return result;
+}
+
+function calculateMetrics(results: EvalResult[]): EvalMetrics {
+    const completeTests = results.filter(r => r.test_type === 'complete' && !r.has_error);
+    const stabilityTests = results.filter(r => r.test_type === 'stability');
+
     return {
-        case_id: testCase.id,
-        group: testCase.group,
-        query: `【${testCase.plan_input}】${testCase.question}`,
-        expected: expectedProduct,
-        should_refuse: shouldRefuse,
-        actual_product: apiResponse?.productName || null,
-        actual_refused: actualRefused,
-        has_citations: hasCitations,
-        pass,
-        reason,
+        total: results.length,
+        avg_completeness_score: completeTests.length > 0
+            ? completeTests.reduce((sum, r) => sum + r.completeness_score, 0) / completeTests.length
+            : 0,
+        avg_citation_score: completeTests.length > 0
+            ? completeTests.reduce((sum, r) => sum + r.citation_score, 0) / completeTests.length
+            : 0,
+        stability_pass_rate: stabilityTests.length > 0
+            ? (stabilityTests.filter(r => r.pass).length / stabilityTests.length) * 100
+            : 0,
+        overall_pass_rate: (results.filter(r => r.pass).length / results.length) * 100,
     };
 }
 
+// ============================================================
+// 主流程
+// ============================================================
+
 async function runEvaluation() {
-    console.log('🚀 开始评估...\n');
+    console.log('🚀 RAG 生产级评估开始...\n');
 
     // 读取测试集
     const evalSetPath = path.join(process.cwd(), 'data', 'eval_set.csv');
     const csvContent = fs.readFileSync(evalSetPath, 'utf-8');
-    const testCases: EvalCase[] = parse(csvContent, {
+    const testCases: TestCase[] = parse(csvContent, {
         columns: true,
         skip_empty_lines: true,
     });
 
     console.log(`📋 加载 ${testCases.length} 条测试用例\n`);
 
-    // 逐条执行
+    // 执行测试
     const results: EvalResult[] = [];
     let processed = 0;
 
     for (const testCase of testCases) {
         processed++;
-        console.log(`[${processed}/${testCases.length}] 测试: ${testCase.question}`);
+        console.log(`[${processed}/${testCases.length}] [${testCase.test_type}] ${testCase.product_name}`);
 
-        const apiResponse = await queryAPI(testCase.plan_input, testCase.question);
+        const apiResponse = await queryAPI(testCase.product_name);
         const result = evaluateCase(testCase, apiResponse);
         results.push(result);
 
         console.log(`  ${result.reason}\n`);
 
-        // 避免API限流
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, REQUEST_DELAY_MS));
     }
 
     // 计算指标
-    const groupA = results.filter((r) => r.group === 'A');
-    const groupB = results.filter((r) => r.group === 'B');
-    const groupC = results.filter((r) => r.group === 'C');
-
-    const metrics: EvalMetrics = {
-        total: results.length,
-        group_a_accuracy: groupA.length > 0
-            ? (groupA.filter((r) => r.pass).length / groupA.length) * 100
-            : 0,
-        group_b_accuracy: groupB.length > 0
-            ? (groupB.filter((r) => r.pass).length / groupB.length) * 100
-            : 0,
-        group_c_refusal_accuracy: groupC.length > 0
-            ? (groupC.filter((r) => r.pass).length / groupC.length) * 100
-            : 0,
-        overall_accuracy: (results.filter((r) => r.pass).length / results.length) * 100,
-        citation_completeness: results.filter((r) => !r.should_refuse && r.has_citations).length /
-            results.filter((r) => !r.should_refuse).length * 100,
-    };
+    const metrics = calculateMetrics(results);
 
     // 输出报告
-    console.log('\n' + '='.repeat(60));
-    console.log('📊 评估报告');
-    console.log('='.repeat(60));
+    console.log('\n' + '='.repeat(70));
+    console.log('📊 RAG 生产级评估报告');
+    console.log('='.repeat(70));
     console.log(`总测试数: ${metrics.total}`);
-    console.log(`\nGroup A（精确输入）准确率: ${metrics.group_a_accuracy.toFixed(1)}% (${groupA.filter(r => r.pass).length}/${groupA.length})`);
-    console.log(`Group B（模糊输入）准确率: ${metrics.group_b_accuracy.toFixed(1)}% (${groupB.filter(r => r.pass).length}/${groupB.length})`);
-    console.log(`Group C（拒答场景）准确率: ${metrics.group_c_refusal_accuracy.toFixed(1)}% (${groupC.filter(r => r.pass).length}/${groupC.length})`);
-    console.log(`\n整体准确率: ${metrics.overall_accuracy.toFixed(1)}%`);
-    console.log(`引用完整性: ${metrics.citation_completeness.toFixed(1)}%`);
-    console.log('='.repeat(60));
+    console.log(`\n【信息完整性】`);
+    console.log(`  平均完整性得分: ${metrics.avg_completeness_score.toFixed(1)}%`);
+    console.log(`  平均引用覆盖率: ${metrics.avg_citation_score.toFixed(1)}%`);
+    console.log(`\n【稳定性测试】`);
+    console.log(`  稳定性通过率: ${metrics.stability_pass_rate.toFixed(1)}%`);
+    console.log(`\n【整体】`);
+    console.log(`  整体通过率: ${metrics.overall_pass_rate.toFixed(1)}%`);
+    console.log('='.repeat(70));
 
     // 失败详情
-    const failures = results.filter((r) => !r.pass);
+    const failures = results.filter(r => !r.pass);
     if (failures.length > 0) {
         console.log('\n❌ 失败案例:');
-        failures.forEach((f) => {
-            console.log(`  [${f.case_id}] ${f.query}`);
+        failures.forEach(f => {
+            console.log(`  [${f.case_id}] ${f.product_name}`);
             console.log(`      ${f.reason}`);
         });
     }
@@ -227,8 +337,7 @@ async function runEvaluation() {
     console.log(`\n💾 详细报告已保存至: ${reportPath}`);
 }
 
-// 执行评估
-runEvaluation().catch((error) => {
+runEvaluation().catch(error => {
     console.error('评估失败:', error);
     process.exit(1);
 });

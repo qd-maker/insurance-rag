@@ -190,6 +190,62 @@
 
 ---
 
+## 十一、前端设计风格规范（Antigravity Style）
+
+> **定位**  
+> 本项目采用的前端风格已验证用户体验良好，  
+> 作为未来 AI 产品/Demo 的默认 UI 设计参考。
+
+### 核心设计原则
+
+1. **极简白底**：`#ffffff` 背景 + `#202124` 深灰文字，视觉干净专业
+2. **Glassmorphism 玻璃态效果**：半透明背景 + 模糊滤镜，增加层次感
+3. **微动画增强体验**：入场动画让界面"活"起来，但不喧宾夺主
+4. **精致细节**：细窄滚动条、悬停反馈、平滑过渡
+
+### CSS 核心实现
+
+```css
+/* 字体栈 */
+font-family: 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+
+/* 玻璃面板效果 */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
+}
+
+/* 入场动画 - 弹性缓动 */
+animation: fadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+
+/* 精致滚动条 */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-thumb { 
+  background: #dadce0; 
+  border-radius: 3px; 
+}
+```
+
+### 设计检查清单
+
+- [ ] 使用 Google Sans / Inter 字体
+- [ ] 主背景纯白，文字深灰（非纯黑）
+- [ ] 卡片/面板使用 glass-panel 效果
+- [ ] 关键元素有 fadeInUp 入场动画
+- [ ] 滚动条细窄且有悬停反馈
+- [ ] hover 状态有 translateY + shadow 变化
+
+### 禁止的设计模式
+
+- ❌ 纯黑文字 `#000000`（太刺眼）
+- ❌ 粗重 box-shadow（显得廉价）
+- ❌ 无动画的突兀出现
+- ❌ 默认浏览器滚动条
+
+---
+
 ## 最终原则（请反复读）
 
 > **AI 产品的核心竞争力不是“更聪明”，  
@@ -197,6 +253,3 @@
 
 > **一个能稳定交付 MVP 的工程师，  
 > 永远比一个想做完美产品的人更值钱。**
-```
-
----

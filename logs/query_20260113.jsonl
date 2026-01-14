@@ -1,0 +1,1 @@
+{"timestamp":"2026-01-13T06:08:41.986Z","query":"康宁保重疾险","top_k":10,"embedding_ms":2656,"retrieved_chunks":[],"llm_ms":15281,"tokens_used":{"prompt":538,"completion":2017},"product_matched":"康宁保重疾险","should_refuse":false,"refuse_reason":null,"duration_ms":19562}

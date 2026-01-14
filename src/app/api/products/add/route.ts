@@ -235,6 +235,31 @@ export async function POST(req: Request) {
 
         steps[4].status = 'done';
 
+        // ============ Step 6: 写入审计日志 ============
+        const operatorName = req.headers.get('X-Operator-Name') || 'admin';
+        const operatorIp = req.headers.get('X-Forwarded-For') || req.headers.get('X-Real-IP') || 'unknown';
+
+        try {
+            await supabase.from('product_audit_log').insert({
+                product_id: productId,
+                action: existingProduct ? 'UPDATE' : 'CREATE',
+                operator: operatorName,
+                operator_ip: operatorIp,
+                before_snapshot: existingProduct ? { id: existingProduct.id } : null,
+                after_snapshot: {
+                    productId,
+                    clauseId: results.clauseId,
+                    name: name.trim(),
+                    contentLength: content.trim().length,
+                    description: description || null,
+                },
+                notes: `通过管理后台添加`,
+            });
+        } catch (auditErr: any) {
+            console.warn('[Audit] 写入审计日志失败:', auditErr.message);
+            // 审计失败不影响主流程
+        }
+
         // ============ 返回成功结果 ============
         return NextResponse.json({
             success: true,
