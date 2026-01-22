@@ -104,30 +104,180 @@ npm run dev
 ## ✨ 核心功能
 
 ### 智能搜索 API
+
 **POST /api/search**
 
-输入：
-```json
-{ "query": "安心无忧医疗险" }
-```
-
-输出（结构化 JSON）：
-```json
+请求 Schema：
+```typescript
 {
-  "productName": { "value": "安心无忧医疗险", "sourceClauseId": 12 },
-  "overview": { "value": "一款百万医疗险...", "sourceClauseId": 12 },
-  "coreCoverage": [...],
-  "exclusions": [...],
-  "targetAudience": {...},
-  "salesScript": [...],
-  "clauseMap": { "12": { "snippet": "条款原文...", "productName": "..." } }
+  query: string,              // 必填，产品名称（1-200字符）
+  matchCount?: number,        // 可选，检索数量（1-50，默认10）
+  matchThreshold?: number,    // 可选，相似度阈值（0-1，默认0.1）
+  debug?: boolean             // 可选，是否返回调试信息
 }
 ```
 
-### 产品管理
-- `GET /api/products/list`：获取产品列表
-- `POST /api/products/add`：添加新产品（需 Token）
-- `POST /api/products/check`：检查产品是否存在
+请求示例：
+```json
+{ "query": "安心无忧医疗险", "matchCount": 5 }
+```
+
+成功响应 Schema：
+```typescript
+{
+  productName: { value: string, sourceClauseId: number | null },
+  overview: { value: string, sourceClauseId: number | null },
+  coreCoverage: Array<{
+    title: string,
+    value: string,
+    desc: string,
+    sourceClauseId: number | null
+  }>,
+  exclusions: Array<{ value: string, sourceClauseId: number | null }>,
+  targetAudience: { value: string, sourceClauseId: number | null },
+  salesScript: string[],
+  rawTerms: string,
+  sources: Array<{ clauseId: number, productName: string | null }>,
+  clauseMap: Record<number, { snippet: string, productName: string | null }>,
+  _cached?: boolean
+}
+```
+
+错误响应（Schema 校验失败）：
+```json
+{
+  "error": "SCHEMA_VIOLATION",
+  "message": "LLM 输出结构校验失败",
+  "details": [...],
+  "raw": { ... }
+}
+```
+
+---
+
+### 产品列表 API
+
+**GET /api/products/list**
+
+响应 Schema：
+```typescript
+Array<{
+  id: number,
+  name: string,
+  description: string | null,
+  is_active: boolean,
+  created_at: string | null,
+  updated_at: string | null,
+  created_by: string | null,
+  aliases: string[],
+  version: string,
+  last_updated: string,
+  source: string
+}>
+```
+
+响应示例：
+```json
+[
+  {
+    "id": 1,
+    "name": "安心无忧医疗险",
+    "description": "一款百万医疗险产品",
+    "is_active": true,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-02T00:00:00Z",
+    "created_by": "admin",
+    "aliases": ["安心医疗", "无忧医疗"],
+    "version": "1.0",
+    "last_updated": "2024-01-02",
+    "source": "database"
+  }
+]
+```
+
+---
+
+### 添加产品 API
+
+**POST /api/products/add**（需 Authorization: Bearer Token）
+
+请求 Schema：
+```typescript
+{
+  name: string,               // 必填，产品名称（1-200字符）
+  content: string,            // 必填，产品条款内容
+  clauses?: Array<{           // 可选，条款数组（至少1条）
+    title?: string,           // 可选，条款标题（1-200字符）
+    content: string           // 必填，条款内容（10-50000字符）
+  }>
+}
+```
+
+请求示例：
+```json
+{
+  "name": "安心无忧医疗险",
+  "content": "产品条款全文内容...",
+  "clauses": [
+    { "title": "保障责任", "content": "条款内容至少10个字符..." }
+  ]
+}
+```
+
+成功响应：
+```json
+{
+  "success": true,
+  "message": "产品 \"安心无忧医疗险\" 已成功添加！",
+  "steps": [
+    { "step": "保存到 seedData.ts", "status": "done" },
+    { "step": "AI 抽取产品描述", "status": "done", "detail": "\"百万医疗险...\"" },
+    { "step": "写入产品数据库", "status": "done", "detail": "新建产品 ID: 5" },
+    { "step": "生成向量嵌入", "status": "done", "detail": "向量维度: 1536" },
+    { "step": "写入条款和向量", "status": "done", "detail": "新建条款 ID: 8" }
+  ],
+  "results": { "productId": 5, "clauseId": 8 }
+}
+```
+
+---
+
+### 检查产品 API
+
+**GET /api/products/check?q=产品名**
+
+响应示例：
+```json
+{
+  "ok": true,
+  "imported": true,
+  "productExists": true,
+  "clauseExists": true,
+  "matchedProductId": 1,
+  "matchedProductName": "安心无忧医疗险",
+  "suggestions": []
+}
+```
+
+---
+
+### 产品状态切换 API
+
+**POST /api/products/toggle-status**
+
+请求 Schema：
+```typescript
+{
+  productId: number,          // 必填，产品ID（正整数）
+  active: boolean,            // 必填，是否启用
+  notes?: string              // 可选，备注（最多500字）
+}
+```
+
+请求示例：
+```json
+{ "productId": 1, "active": false, "notes": "产品下架维护" }
+```
 
 ### 拒答策略
 自动拒绝以下输入：
