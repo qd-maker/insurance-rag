@@ -1,5 +1,6 @@
 import { embedText } from '@/lib/embeddings';
 import { QueryLogger } from '@/lib/logger';
+import { SearchRequestSchema, SearchSuccessResponseSchema, parseAndValidate } from '@/lib/schemas';
 
 export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
@@ -117,14 +118,12 @@ export async function POST(req: Request) {
     }
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    const body = await req.json().catch(() => ({}));
-    const query = (body?.query ?? '').toString().trim();
-    const matchCount: number = Number(body?.matchCount ?? 10);
-    const matchThreshold: number = Number(body?.matchThreshold ?? 0.1);
-
-    if (!query) {
-      return NextResponse.json({ error: '缺少必填参数 query' }, { status: 400 });
+    // ========== Schema 校验 ==========
+    const parsed = await parseAndValidate(req, SearchRequestSchema);
+    if (!parsed.success) {
+      return parsed.response;
     }
+    const { query, matchCount, matchThreshold, debug } = parsed.data;
 
     // ========== 精细拒答：无意义输入检测 ==========
     const gibberishCheck = isGibberish(query);
@@ -172,6 +171,7 @@ export async function POST(req: Request) {
         }
       }
     }
+
 
     // ⚠️ 如果检测到产品名，生成缓存键并检查缓存
     if (matchedProductName && ENABLE_CACHE) {
@@ -335,8 +335,6 @@ export async function POST(req: Request) {
 
     const userPrompt = `用户问题：\n${query}\n\n条款上下文：\n${context}\n\n请输出严格符合上述要求的 JSON。`;
 
-    const debug = Boolean(body?.debug);
-
     // LLM调用
     const llmStart = Date.now();
     const chat = await openai.chat.completions.create({
@@ -388,6 +386,22 @@ export async function POST(req: Request) {
     // 添加来源信息和条款映射表
     jsonOut.sources = sources;
     jsonOut.clauseMap = clauseMap;
+
+    // ========== Schema 校验 LLM 输出 ==========
+    const schemaValidation = SearchSuccessResponseSchema.safeParse(jsonOut);
+    if (!schemaValidation.success) {
+      console.error('[Schema] LLM output validation failed:', schemaValidation.error.issues);
+      logger.setRefusal(true, 'SCHEMA_VIOLATION');
+      logger.setDuration(Date.now() - startTime);
+      logger.save().catch(err => console.error('[Logger] Save failed:', err));
+
+      return NextResponse.json({
+        error: 'SCHEMA_VIOLATION',
+        message: 'LLM 输出结构校验失败',
+        details: schemaValidation.error.issues,
+        raw: jsonOut,
+      }, { status: 500 });
+    }
 
     // 记录产品名和总耗时（兼容新旧格式）
     const productNameValue = jsonOut.productName?.value || jsonOut.productName || null;

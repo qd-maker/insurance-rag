@@ -45,6 +45,11 @@ const stepIcons: Record<string, React.ReactNode> = {
 
 export default function AddProductPage() {
     const [token, setToken] = useState('');
+    const [tokenInput, setTokenInput] = useState('');
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [authLoading, setAuthLoading] = useState(true);
+    const [loginLoading, setLoginLoading] = useState(false);
+    const [loginError, setLoginError] = useState<string | null>(null);
     const [name, setName] = useState('');
     const [content, setContent] = useState('');
     const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -52,13 +57,60 @@ export default function AddProductPage() {
     const [steps, setSteps] = useState<Step[]>([]);
     const [results, setResults] = useState<ApiResponse['results']>(undefined);
 
-    // 从 sessionStorage 获取 token（与 /admin/products 共享）
+    // 从 sessionStorage 获取并验证 token
     React.useEffect(() => {
         const savedToken = sessionStorage.getItem('admin_token');
         if (savedToken) {
-            setToken(savedToken);
+            fetch('/api/admin/verify-token', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${savedToken}` },
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.valid) {
+                        setToken(savedToken);
+                        setIsAuthenticated(true);
+                    } else {
+                        sessionStorage.removeItem('admin_token');
+                    }
+                })
+                .catch(() => {
+                    sessionStorage.removeItem('admin_token');
+                })
+                .finally(() => setAuthLoading(false));
+        } else {
+            setAuthLoading(false);
         }
     }, []);
+
+    const handleLogin = async () => {
+        const trimmed = tokenInput.trim();
+        if (!trimmed) return;
+
+        setLoginLoading(true);
+        setLoginError(null);
+
+        try {
+            const res = await fetch('/api/admin/verify-token', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${trimmed}` },
+            });
+            const data = await res.json();
+
+            if (!res.ok || !data.valid) {
+                setLoginError(data.error || 'Token 验证失败');
+                return;
+            }
+
+            sessionStorage.setItem('admin_token', trimmed);
+            setToken(trimmed);
+            setIsAuthenticated(true);
+        } catch {
+            setLoginError('网络请求失败，请重试');
+        } finally {
+            setLoginLoading(false);
+        }
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -142,6 +194,60 @@ export default function AddProductPage() {
             setMessage('网络错误，请稍后重试');
         }
     };
+
+    // 加载中
+    if (authLoading) {
+        return (
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+            </div>
+        );
+    }
+
+    // 未认证 - 显示登录界面
+    if (!isAuthenticated) {
+        return (
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+                <div className="bg-white p-8 rounded-2xl shadow-lg max-w-sm w-full">
+                    <div className="text-center mb-6">
+                        <div className="inline-flex p-3 rounded-xl bg-blue-50 mb-4">
+                            <Lock className="w-8 h-8 text-blue-600" />
+                        </div>
+                        <h1 className="text-xl font-bold text-slate-900">添加新险种</h1>
+                        <p className="text-slate-500 text-sm mt-1">请输入管理员 Token</p>
+                    </div>
+                    <input
+                        type="password"
+                        value={tokenInput}
+                        onChange={(e) => setTokenInput(e.target.value)}
+                        placeholder="管理员 Token"
+                        className={`w-full px-4 py-3 rounded-xl border focus:ring-2 focus:outline-none mb-2 ${loginError ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : 'border-slate-200 focus:border-blue-500 focus:ring-blue-100'}`}
+                        onKeyDown={(e) => e.key === 'Enter' && !loginLoading && handleLogin()}
+                        disabled={loginLoading}
+                    />
+                    {loginError && (
+                        <div className="text-red-600 text-sm mb-3 flex items-center gap-1">
+                            <XCircle className="w-4 h-4" />
+                            {loginError}
+                        </div>
+                    )}
+                    <button
+                        onClick={handleLogin}
+                        disabled={!tokenInput.trim() || loginLoading}
+                        className="w-full bg-blue-600 text-white py-3 rounded-xl font-medium hover:bg-blue-700 disabled:bg-slate-300 transition-colors flex items-center justify-center gap-2"
+                    >
+                        {loginLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                        {loginLoading ? '验证中...' : '进入'}
+                    </button>
+                    <div className="mt-4 text-center">
+                        <Link href="/admin/products" className="text-sm text-blue-600 hover:underline">
+                            返回产品管理
+                        </Link>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="min-h-screen bg-slate-50">

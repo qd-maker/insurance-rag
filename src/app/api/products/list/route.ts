@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import path from 'path';
 import fs from 'fs';
+import { ProductListResponseSchema } from '@/lib/schemas';
 
 export const runtime = 'nodejs';
 
@@ -80,7 +81,18 @@ export async function GET() {
                 };
             });
 
-        return NextResponse.json(productList);
+        // Schema 校验响应数据
+        const validated = ProductListResponseSchema.safeParse(productList);
+        if (!validated.success) {
+            console.error('[Schema] ProductList validation failed:', validated.error.issues);
+            return NextResponse.json({
+                error: 'SCHEMA_VIOLATION',
+                message: '响应数据结构校验失败',
+                details: validated.error.issues,
+            }, { status: 500 });
+        }
+
+        return NextResponse.json(validated.data);
     } catch (e: any) {
         console.error('API Error:', e);
         return NextResponse.json({ error: e.message || 'Internal Server Error' }, { status: 500 });

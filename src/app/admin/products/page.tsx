@@ -53,6 +53,61 @@ export default function ProductsManagementPage() {
     const [loadingAudit, setLoadingAudit] = useState(false);
     const [togglingId, setTogglingId] = useState<number | null>(null);
 
+    useEffect(() => {
+        const savedToken = sessionStorage.getItem('admin_token');
+        if (savedToken) {
+            // 验证保存的 token 是否仍然有效
+            fetch('/api/admin/verify-token', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${savedToken}` },
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.valid) {
+                        setToken(savedToken);
+                        setIsAuthenticated(true);
+                    } else {
+                        sessionStorage.removeItem('admin_token');
+                    }
+                })
+                .catch(() => {
+                    sessionStorage.removeItem('admin_token');
+                });
+        }
+    }, []);
+
+    const [loginLoading, setLoginLoading] = useState(false);
+    const [loginError, setLoginError] = useState<string | null>(null);
+
+    const handleLogin = async () => {
+        const trimmed = token.trim();
+        if (!trimmed) return;
+
+        setLoginLoading(true);
+        setLoginError(null);
+
+        try {
+            const res = await fetch('/api/admin/verify-token', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${trimmed}` },
+            });
+            const data = await res.json();
+
+            if (!res.ok || !data.valid) {
+                setLoginError(data.error || 'Token 验证失败');
+                return;
+            }
+
+            sessionStorage.setItem('admin_token', trimmed);
+            setToken(trimmed);
+            setIsAuthenticated(true);
+        } catch (err: any) {
+            setLoginError('网络请求失败，请重试');
+        } finally {
+            setLoginLoading(false);
+        }
+    };
+
     // 加载产品列表
     const loadProducts = async () => {
         setLoading(true);
@@ -74,10 +129,15 @@ export default function ProductsManagementPage() {
 
     // 加载审计日志
     const loadAuditLogs = async (productId: number) => {
+        const authToken = token.trim();
+        if (!authToken) {
+            setIsAuthenticated(false);
+            return;
+        }
         setLoadingAudit(true);
         try {
             const res = await fetch(`/api/admin/audit-log?productId=${productId}`, {
-                headers: { 'Authorization': `Bearer ${token}` },
+                headers: { 'Authorization': `Bearer ${authToken}` },
             });
             const data = await res.json();
             if (data.success && data.logs) {
@@ -92,17 +152,27 @@ export default function ProductsManagementPage() {
 
     // 切换产品状态
     const toggleProductStatus = async (productId: number, currentActive: boolean) => {
+        const authToken = token.trim();
+        if (!authToken) {
+            alert('认证已过期，请重新输入管理员 Token');
+            setIsAuthenticated(false);
+            return;
+        }
         setTogglingId(productId);
         try {
             const res = await fetch('/api/products/toggle-status', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`,
+                    'Authorization': `Bearer ${authToken}`,
                 },
                 body: JSON.stringify({ productId, active: !currentActive }),
             });
-            const data = await res.json();
+            const data = await res.json().catch(() => null);
+            if (!res.ok) {
+                alert(data?.error || data?.message || '操作失败');
+                return;
+            }
             if (data.success) {
                 // 更新本地状态
                 setProducts(prev => prev.map(p =>
@@ -113,7 +183,7 @@ export default function ProductsManagementPage() {
                     loadAuditLogs(productId);
                 }
             } else {
-                alert(data.message || '操作失败');
+                alert(data?.message || data?.error || '操作失败');
             }
         } catch (err) {
             alert('操作失败，请重试');
@@ -162,20 +232,23 @@ export default function ProductsManagementPage() {
                         value={token}
                         onChange={(e) => setToken(e.target.value)}
                         placeholder="管理员 Token"
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none mb-4"
-                        onKeyDown={(e) => e.key === 'Enter' && token && setIsAuthenticated(true)}
+                        className={`w-full px-4 py-3 rounded-xl border focus:ring-2 focus:outline-none mb-2 ${loginError ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : 'border-slate-200 focus:border-blue-500 focus:ring-blue-100'}`}
+                        onKeyDown={(e) => e.key === 'Enter' && !loginLoading && handleLogin()}
+                        disabled={loginLoading}
                     />
+                    {loginError && (
+                        <div className="text-red-600 text-sm mb-3 flex items-center gap-1">
+                            <XCircle className="w-4 h-4" />
+                            {loginError}
+                        </div>
+                    )}
                     <button
-                        onClick={() => {
-                            if (token) {
-                                sessionStorage.setItem('admin_token', token);
-                                setIsAuthenticated(true);
-                            }
-                        }}
-                        disabled={!token}
-                        className="w-full bg-blue-600 text-white py-3 rounded-xl font-medium hover:bg-blue-700 disabled:bg-slate-300 transition-colors"
+                        onClick={handleLogin}
+                        disabled={!token.trim() || loginLoading}
+                        className="w-full bg-blue-600 text-white py-3 rounded-xl font-medium hover:bg-blue-700 disabled:bg-slate-300 transition-colors flex items-center justify-center gap-2"
                     >
-                        进入管理
+                        {loginLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                        {loginLoading ? '验证中...' : '进入管理'}
                     </button>
                 </div>
             </div>
