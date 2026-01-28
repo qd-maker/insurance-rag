@@ -42,3 +42,6 @@
 {"timestamp":"2026-01-14T01:56:00.163Z","query":"安心无忧医疗险","top_k":10,"duration_ms":337}
 {"timestamp":"2026-01-14T01:56:01.024Z","query":"康宁保重疾险","top_k":10,"duration_ms":343}
 {"timestamp":"2026-01-14T01:56:01.890Z","query":"惠民安心守护重大疾病险（旗舰版）","top_k":10,"duration_ms":358}
+{"timestamp":"2026-01-14T07:09:00.317Z","query":"安心无忧医疗险","top_k":10,"duration_ms":505}
+{"timestamp":"2026-01-14T07:24:48.748Z","query":"安心无忧医疗险","top_k":10,"embedding_ms":1462,"retrieved_chunks":[{"id":1,"similarity":0.583542806400586,"snippet":"【产品定位】面向18-60周岁人群的百万医疗险,提供全面的住院医疗费用保障,适合追求高性价比医疗保障的家庭和个人。\n【保障额度】一般医疗保险金额度300万元,重大疾病医疗保险金额度600万元,年度免赔"}],"llm_ms":30548,"tokens_used":{"prompt":910,"completion":4418},"product_matched":"安心无忧医疗险","should_refuse":false,"refuse_reason":null,"duration_ms":32984}
+{"timestamp":"2026-01-14T07:25:42.572Z","query":"招商信诺悠享康健高端医疗险","top_k":10,"embedding_ms":1420,"retrieved_chunks":[{"id":16,"similarity":0.58642299013412,"snippet":"【产品定位】高端医疗险,全球就医,不限社保,适合高收入人群。\n【保障额度】年度保额1000万元,终身保额3000万元,0免赔额。\n【核心责任】住院医疗、门诊医疗、特殊门诊、体检、疫苗、牙科、生育等全覆"}],"llm_ms":35257,"tokens_used":{"prompt":703,"completion":3465},"product_matched":"招商信诺悠享康健高端医疗险","should_refuse":false,"refuse_reason":null,"duration_ms":38033}

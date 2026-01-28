@@ -1,6 +1,7 @@
 export const runtime = 'nodejs';
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { ProductCheckQuerySchema, validateRequest, validationErrorResponse } from "@/lib/schemas";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -18,7 +19,14 @@ function normalize(s: string) {
 
 export async function GET(req: NextRequest) {
   try {
-    const q = req.nextUrl.searchParams.get("q")?.trim() ?? "";
+    // ========== Schema 校验查询参数 ==========
+    const params = { q: req.nextUrl.searchParams.get("q") ?? "" };
+    const parsed = validateRequest(ProductCheckQuerySchema, params);
+    if (!parsed.success) {
+      return validationErrorResponse(parsed.error);
+    }
+    const q = parsed.data.q.trim();
+
     if (!q) {
       return NextResponse.json({
         ok: true,

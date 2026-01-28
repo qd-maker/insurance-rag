@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "baseline": "npx tsx scripts/eval-quality.ts --baseline",
+    "eval": "npx tsx scripts/eval-quality.ts",
+    "analyze-logs": "npx tsx scripts/analyze-logs.ts",
+    "check-logs": "npx tsx scripts/check-log-size.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.86.0",
@@ -20,7 +24,8 @@
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "tailwind-merge": "^3.4.0",
-    "three": "^0.182.0"
+    "three": "^0.182.0",
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

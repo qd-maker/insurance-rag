@@ -31,6 +31,50 @@ interface TestCase {
     notes: string;
 }
 
+interface LegacyTestCase {
+    id: string;
+    product_name: string;
+    test_type: 'complete' | 'stability';
+    notes: string;
+}
+
+const LEGACY_FIELD_TEMPLATES: Array<{
+    expected_field: string;
+    field_type: 'single' | 'array';
+    question: string;
+}> = [
+        { expected_field: 'overview', field_type: 'single', question: '产品概述是什么' },
+        { expected_field: 'coreCoverage', field_type: 'array', question: '核心保障有哪些' },
+        { expected_field: 'exclusions', field_type: 'array', question: '免责条款有哪些' },
+        { expected_field: 'targetAudience', field_type: 'single', question: '适用人群是什么' },
+    ];
+
+function expandLegacyTestCases(rows: LegacyTestCase[]): TestCase[] {
+    const expanded: TestCase[] = [];
+
+    rows.forEach((row, index) => {
+        const group = row.test_type === 'stability' ? 'C' : 'A';
+        const templates = row.test_type === 'stability'
+            ? LEGACY_FIELD_TEMPLATES.slice(0, 1)
+            : LEGACY_FIELD_TEMPLATES;
+
+        templates.forEach((tpl) => {
+            expanded.push({
+                id: `${row.id || index + 1}-${tpl.expected_field}`,
+                group,
+                plan_input: row.product_name,
+                question: tpl.question,
+                expected_field: tpl.expected_field,
+                field_type: tpl.field_type,
+                should_have_citation: '1',
+                notes: row.notes || '',
+            });
+        });
+    });
+
+    return expanded;
+}
+
 interface APIResponse {
     productName?: { value: string; sourceClauseId: number | null } | string;
     overview?: { value: string; sourceClauseId: number | null } | string;
@@ -317,7 +361,24 @@ async function runEvaluation(options: { baseline?: boolean; compareFile?: string
     }
 
     const csvContent = fs.readFileSync(evalSetPath, 'utf-8');
-    const testCases: TestCase[] = parse(csvContent, { columns: true, skip_empty_lines: true });
+    const rawRows = parse(csvContent, { columns: true, skip_empty_lines: true });
+
+    if (!rawRows.length) {
+        console.error('❌ 测试集为空');
+        process.exit(1);
+    }
+
+    let testCases: TestCase[] = [];
+    const firstRow = rawRows[0] as Record<string, unknown>;
+    if ('plan_input' in firstRow) {
+        testCases = rawRows as TestCase[];
+    } else if ('product_name' in firstRow) {
+        console.log('⚠️ 检测到旧版测试集，已自动扩展为字段级用例');
+        testCases = expandLegacyTestCases(rawRows as LegacyTestCase[]);
+    } else {
+        console.error('❌ 未识别的测试集格式，请检查 data/eval_set.csv 列名');
+        process.exit(1);
+    }
 
     console.log(`📋 加载 ${testCases.length} 条测试用例\n`);
 
@@ -325,7 +386,7 @@ async function runEvaluation(options: { baseline?: boolean; compareFile?: string
 
     for (let i = 0; i < testCases.length; i++) {
         const tc = testCases[i];
-        const query = `【${tc.plan_input}】${tc.question}`;
+        const query = tc.question ? `【${tc.plan_input}】${tc.question}` : tc.plan_input;
 
         process.stdout.write(`[${i + 1}/${testCases.length}] ${query.slice(0, 40).padEnd(40)} `);
 

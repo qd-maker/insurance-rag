@@ -258,6 +258,103 @@ function validateConfig() {
 
 ---
 
+## 模式 7：产品隔离策略（Product Isolation）
+
+### 问题本质
+
+在多产品 RAG 系统中，用户查询特定产品时，**向量相似度可能返回其他产品的条款**，导致：
+- 信息混淆（张冠李戴）
+- 用户信任度下降
+- 错误的业务决策
+
+### 当前实现策略
+
+**混合检索流程（`src/lib/retrieval.ts`）**
+
+```
+查询输入
+ ├─ 阶段1：产品名优先匹配
+ │   ├─ 归一化产品名（去空格、标点、大小写）
+ │   ├─ 双向包含检查：query ⊇ productName 或 productName ⊇ query
+ │   └─ 记录 priorityProductIds
+ ├─ 阶段2：向量检索
+ │   ├─ 扩大召回（matchCount * 2）
+ │   └─ 返回原始向量匹配结果
+ ├─ 阶段3：优先级过滤 + 重排序
+ │   ├─ 如有产品名匹配 → 仅保留该产品条款（PRODUCT_NAME_MATCH）
+ │   ├─ 如优先产品无条款 → 重排序（PRODUCT_NAME_RERANK）
+ │   └─ 截取到 matchCount
+ └─ 阶段4：Fallback
+     └─ 向量检索无结果 → ilike 模糊匹配
+```
+
+**关键代码逻辑**
+
+```typescript
+// 产品名归一化
+function normalizeProductName(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[\s\u3000]/g, '')
+    .replace(/[()（）［］【】\[\]·•．・。、，,._/:'""-]+/g, '');
+}
+
+// 优先级过滤
+if (priorityProductIds.length > 0 && rows.length > 0) {
+  const priorityRows = rows.filter(
+    r => r.product_id && priorityProductIds.includes(r.product_id)
+  );
+  if (priorityRows.length > 0) {
+    rows = priorityRows; // 🔥 关键：仅保留匹配产品
+  }
+}
+```
+
+### 检索策略枚举
+
+| 策略 | 含义 | 触发条件 |
+|------|------|----------|
+| `PRODUCT_NAME_MATCH` | 产品名匹配成功，仅返回该产品条款 | 产品名匹配 + 有对应条款 |
+| `PRODUCT_NAME_RERANK` | 产品名匹配，但重排序所有结果 | 产品名匹配 + 无对应条款 |
+| `VECTOR_ONLY` | 纯向量检索 | 无产品名匹配 |
+| `FALLBACK_ILIKE` | ilike 模糊匹配兜底 | 向量检索无结果 |
+| `NO_RESULTS` | 无检索结果 | 所有策略均无结果 |
+| `FAILED` | 检索失败 | 系统错误 |
+
+### 配置参数
+
+| 参数 | 环境变量 | 默认值 | 说明 |
+|------|----------|--------|------|
+| Top-K | `RETRIEVAL_TOP_K` | 10 | 返回条款数量 |
+| 阈值 | `RETRIEVAL_THRESHOLD` | 0.3 | 向量相似度阈值 |
+
+### 质量验收指标
+
+| 指标 | 目标 | 验收脚本 |
+|------|------|----------|
+| 产品命中率 | ≥ 95% | `npx tsx scripts/eval-retrieval.ts` |
+| 跨产品污染率 | ≤ 10% | 同上 |
+
+### 调试方法
+
+```bash
+# 调试 API
+curl "http://localhost:3000/api/debug/retrieval?query=安心无忧医疗险&debug=true"
+
+# 评估脚本
+npx tsx scripts/eval-retrieval.ts
+```
+
+### 检查清单
+
+* [ ] 产品名归一化逻辑覆盖常见变体
+* [ ] 优先级过滤在向量检索后执行
+* [ ] 配置参数可通过环境变量调整
+* [ ] 调试 API 返回检索策略和中间结果
+
+---
+
 ## 反模式：不应该使用 RAG 的场景（重要）
 
 * 规则可穷举（if / else 更可靠）

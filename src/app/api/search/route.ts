@@ -1,6 +1,6 @@
-import { embedText } from '@/lib/embeddings';
-import { QueryLogger } from '@/lib/logger';
+import { QueryLogger, logError } from '@/lib/logger';
 import { SearchRequestSchema, SearchSuccessResponseSchema, parseAndValidate } from '@/lib/schemas';
+import { hybridRetrieve, getProductNames, getCacheKey, ClauseRow } from '@/lib/retrieval';
 
 export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
@@ -9,8 +9,6 @@ import OpenAI from 'openai';
 
 // 环境配置
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small'; // 1536 维
-// 生成模型可按需替换为 gpt-4 或其他模型（需支持 JSON 输出）
 const GENERATION_MODEL = process.env.GENERATION_MODEL || 'gpt-4o-mini';
 
 // OpenAI 聚合/直连（仍用于 chat completions）
@@ -81,29 +79,12 @@ function isGibberish(query: string): { isGibberish: boolean; reason?: string } {
 }
 
 // ========== 缓存系统 ==========
-
-// 产品名归一化（用于缓存键和产品匹配）
-function normalizeProductName(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize('NFKC')
-    .replace(/[\s\u3000]/g, '') // 移除空格
-    .replace(/[()（）［］【】\[\]·•．・。、，,._/:'""-]+/g, ''); // 移除标点
-}
-
-// 生成缓存键（简化版：只用产品名）
-// ⚠️ 业务场景：用户选择产品 → 生成信息卡片
-// 缓存键 = 产品名，不包含query（因为用户不输入问题）
-function getCacheKey(productName: string): string {
-  return normalizeProductName(productName);
-}
-
-// 相似度阈值
-const SIMILARITY_THRESHOLD = 0.3;
+// getCacheKey 已从 @/lib/retrieval 导入
 
 export async function POST(req: Request) {
   const startTime = Date.now();
   const logger = new QueryLogger();
+  const requestId = logger.requestId;
 
   try {
     if (!OPENAI_API_KEY) {
@@ -143,35 +124,24 @@ export async function POST(req: Request) {
     logger.setQuery(query);
     logger.setTopK(matchCount);
 
-    // ========== 缓存检查：查询 Supabase search_cache 表 ==========
-    // ⚠️ 业务逻辑：用户选择产品 → 生成信息卡片
-    // 缓存策略：以产品名为键，缓存整个信息卡片
+    // ========== 缓存检查 ==========
     const ENABLE_CACHE = process.env.ENABLE_SEARCH_CACHE === 'true';
     let cacheKey: string | null = null;
     let cachedResult: { result: any; id: number; hit_count: number } | null = null;
 
-    // ========== 新增：混合检索 - 产品名优先匹配 ==========
-    // 0) 优先检查产品名是否直接匹配（只查询启用的产品）
-    const queryNorm = normalizeProductName(query);
-    const { data: allProducts } = await supabase
-      .from('products')
-      .select('id, name')
-      .eq('is_active', true);  // 只查询启用的产品
+    // ========== 调用混合检索模块 ==========
+    const retrievalResult = await hybridRetrieve(query, supabase, {
+      matchCount,
+      matchThreshold,
+      debug,
+    });
 
-    let priorityProductIds: number[] = [];
-    let matchedProductName: string | null = null;
+    const { rows, matchedProductName, strategy } = retrievalResult;
+    const usedFallback = strategy === 'FALLBACK_ILIKE';
 
-    for (const p of allProducts || []) {
-      const nameNorm = normalizeProductName(p.name);
-      // 双向包含检查：查询包含产品名 或 产品名包含查询
-      if (nameNorm.includes(queryNorm) || queryNorm.includes(nameNorm)) {
-        priorityProductIds.push(p.id);
-        if (!matchedProductName) {
-          matchedProductName = p.name; // 记录第一个匹配的产品名
-        }
-      }
-    }
-
+    // 记录检索结果和策略
+    logger.setRetrievedChunks(rows);
+    logger.setRetrievalStrategy(strategy);
 
     // ⚠️ 如果检测到产品名，生成缓存键并检查缓存
     if (matchedProductName && ENABLE_CACHE) {
@@ -192,6 +162,7 @@ export async function POST(req: Request) {
 
       if (cachedResult?.result) {
         // 缓存命中
+        logger.setCacheHit(true);
         supabase
           .from('search_cache')
           .update({ hit_count: (cachedResult.hit_count || 0) + 1 })
@@ -200,102 +171,27 @@ export async function POST(req: Request) {
         logger.setDuration(Date.now() - startTime);
         logger.save().catch(err => console.error('[Logger] Save failed:', err));
 
-        return NextResponse.json({ ...cachedResult.result, _cached: true });
-      }
-    }
-    // ========== 混合检索结束 ==========
-
-    // 1) 生成查询向量 - 使用多模态 API
-    const embeddingStart = Date.now();
-    const queryEmbedding = await embedText(query, { model: EMBEDDING_MODEL });
-    logger.setEmbeddingDuration(Date.now() - embeddingStart);
-
-
-    // 2) 调用 Supabase 向量匹配函数
-    const { data: matches, error: matchErr } = await supabase.rpc('match_clauses', {
-      query_embedding: queryEmbedding,
-      match_threshold: matchThreshold,
-      match_count: matchCount * 2, // 扩大召回，后续重排
-    });
-    if (matchErr) throw matchErr;
-
-    let rows: Array<{ id: number; product_id: number | null; content: string | null; similarity?: number }>
-      = Array.isArray(matches) ? matches : [];
-
-    // ========== 新增：优先级过滤 + 重排序 ==========
-    if (priorityProductIds.length > 0 && rows.length > 0) {
-      // 🔥 关键修改：如果有产品名匹配，只保留该产品的条款
-      const priorityRows = rows.filter(r => r.product_id && priorityProductIds.includes(r.product_id));
-
-      if (priorityRows.length > 0) {
-        // 如果优先产品有足够条款，只使用这些条款
-        rows = priorityRows;
-        console.log(`[混合检索] 产品名匹配成功，过滤为仅包含匹配产品的 ${rows.length} 条条款`);
-      } else {
-        // 否则保留所有结果并重排序
-        rows.sort((a, b) => {
-          const aMatch = a.product_id && priorityProductIds.includes(a.product_id);
-          const bMatch = b.product_id && priorityProductIds.includes(b.product_id);
-          if (aMatch && !bMatch) return -1;
-          if (!aMatch && bMatch) return 1;
-          return (b.similarity || 0) - (a.similarity || 0);
-        });
-      }
-
-      // 截取到原始 matchCount
-      rows = rows.slice(0, matchCount);
-    }
-    // ========== 过滤 + 重排序结束 ==========
-
-    // 记录检索结果
-    logger.setRetrievedChunks(rows);
-
-    let usedFallback = false;
-
-    // Fallback：若相似检索无结果，尝试按产品名模糊匹配，直接抓取条款
-    if (!rows.length) {
-      const { data: prodLike, error: prodLikeErr } = await supabase
-        .from('products')
-        .select('id, name')
-        .ilike('name', `%${query}%`)
-        .limit(3);
-      if (prodLikeErr) throw prodLikeErr;
-      const likeIds = (prodLike || []).map((p: any) => p.id);
-      if (likeIds.length) {
-        usedFallback = true;
-        const { data: clauseRows, error: clauseErr } = await supabase
-          .from('clauses')
-          .select('id, product_id, content')
-          .in('product_id', likeIds)
-          .limit(matchCount);
-        if (clauseErr) throw clauseErr;
-        rows = clauseRows || [];
+        return NextResponse.json(
+          { ...cachedResult.result, _cached: true },
+          { headers: { 'X-Request-Id': requestId } }
+        );
       }
     }
 
-    // 若仍无匹配，直接返回 notFound 兜底，避免无上下文调用模型
-    if (!rows.length) {
-      return NextResponse.json({
-        ok: true,
-        retrieval: [],
-        notFound: { query, reason: 'NO_SIMILAR_PRODUCT' },
-      });
+    // 若无匹配，直接返回 notFound 兜底
+    if (!rows.length || strategy === 'NO_RESULTS' || strategy === 'FAILED') {
+      logger.setDuration(Date.now() - startTime);
+      logger.save().catch(err => console.error('[Logger] Save failed:', err));
+
+      return NextResponse.json(
+        { ok: true, retrieval: [], notFound: { query, reason: 'NO_SIMILAR_PRODUCT' } },
+        { headers: { 'X-Request-Id': requestId } }
+      );
     }
 
-    // 拉取产品名，增强上下文可读性
+    // 拉取产品名
     const productIds = Array.from(new Set(rows.map(r => r.product_id).filter(Boolean))) as number[];
-    let productNames: Record<number, string> = {};
-    if (productIds.length) {
-      const { data: prodRows, error: prodErr } = await supabase
-        .from('products')
-        .select('id, name')
-        .in('id', productIds);
-      if (prodErr) throw prodErr;
-      productNames = (prodRows || []).reduce((acc: Record<number, string>, p: any) => {
-        acc[p.id] = p.name;
-        return acc;
-      }, {});
-    }
+    const productNames = await getProductNames(supabase, productIds)
 
     const { context, sources, clauseMap } = buildContext(rows, productNames);
 
@@ -433,13 +329,25 @@ export async function POST(req: Request) {
     }
 
     // 最终只返回结构化对象（不包裹 ok 字段，符合你的要求）
-    return NextResponse.json(jsonOut);
+    return NextResponse.json(jsonOut, {
+      headers: { 'X-Request-Id': requestId }
+    });
   } catch (e: any) {
     // 记录错误并保存日志
-    logger.setRefusal(true, e?.message || 'Internal Error');
+    const errorMessage = e?.message || 'Internal Error';
+    logger.setError('INTERNAL_ERROR', errorMessage);
+    logger.setRefusal(true, errorMessage);
     logger.setDuration(Date.now() - startTime);
     logger.save().catch(err => console.error('[Logger] Save failed:', err));
 
-    return NextResponse.json({ error: e?.message || 'Internal Error' }, { status: 500 });
+    // 写入错误日志
+    logError(requestId, 'INTERNAL_ERROR', errorMessage, e?.stack, {
+      query: logger.getLog().query,
+    }).catch(err => console.error('[Logger] Error log failed:', err));
+
+    return NextResponse.json(
+      { error: errorMessage },
+      { status: 500, headers: { 'X-Request-Id': requestId } }
+    );
   }
 }

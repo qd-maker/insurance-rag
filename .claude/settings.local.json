@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(npm run build:*)",
+      "Bash(curl:*)",
+      "Bash(powershell -Command \"$body = @{query=''安心无忧医疗险''} | ConvertTo-Json -Compress; Invoke-RestMethod -Uri ''http://localhost:3000/api/search'' -Method Post -ContentType ''application/json; charset=utf-8'' -Body \\([System.Text.Encoding]::UTF8.GetBytes\\($body\\)\\)\")",
+      "Bash(node -e:*)"
+    ]
+  }
+}

@@ -226,8 +226,12 @@ function evaluateCase(testCase: TestCase, apiResponse: APIResponse | null): Eval
             result.reason = result.pass ? '✅ 首次查询成功' : '❌ 首次查询失败';
         } else {
             // 对比结果一致性 (只对比核心字段)
-            const currentProductName = apiResponse.productName?.value || apiResponse.productName;
-            const cachedProductName = cached.productName?.value || cached.productName;
+            const currentProductName = typeof apiResponse.productName === 'object' && apiResponse.productName !== null
+                ? apiResponse.productName.value
+                : apiResponse.productName;
+            const cachedProductName = typeof cached.productName === 'object' && cached.productName !== null
+                ? cached.productName.value
+                : cached.productName;
             const isConsistent = currentProductName === cachedProductName;
 
             result.pass = isConsistent;

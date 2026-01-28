@@ -1,0 +1,103 @@
+name: Evaluation CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  evaluate:
+    name: Run Quality Evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start dev server
+        run: |
+          npm run start &
+          echo "Waiting for server to start..."
+          sleep 10
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+
+      - name: Run evaluation script
+        id: eval
+        run: |
+          npx tsx scripts/eval-quality.ts --output outputs/eval_result.json
+          
+          # Parse results
+          ERROR_RATE=$(cat outputs/eval_result.json | jq -r '.error_rate // 0')
+          CITATION_COVERAGE=$(cat outputs/eval_result.json | jq -r '.citation_coverage // 100')
+          
+          echo "error_rate=$ERROR_RATE" >> $GITHUB_OUTPUT
+          echo "citation_coverage=$CITATION_COVERAGE" >> $GITHUB_OUTPUT
+          
+          echo "## Evaluation Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Error Rate | ${ERROR_RATE}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| Citation Coverage | ${CITATION_COVERAGE}% |" >> $GITHUB_STEP_SUMMARY
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Compare with baseline
+        run: |
+          if [ -f outputs/baseline_quality.json ]; then
+            echo "Comparing with baseline..."
+            npx tsx scripts/compare-baseline.ts
+          else
+            echo "No baseline found, skipping comparison"
+          fi
+
+      - name: Check quality thresholds
+        run: |
+          ERROR_RATE=${{ steps.eval.outputs.error_rate }}
+          CITATION_COVERAGE=${{ steps.eval.outputs.citation_coverage }}
+          
+          # Check error rate threshold (max 5%)
+          if (( $(echo "$ERROR_RATE > 5" | bc -l) )); then
+            echo "❌ Error rate ($ERROR_RATE%) exceeds threshold (5%)"
+            exit 1
+          fi
+          
+          # Check citation coverage threshold (min 85%)
+          if (( $(echo "$CITATION_COVERAGE < 85" | bc -l) )); then
+            echo "❌ Citation coverage ($CITATION_COVERAGE%) below threshold (85%)"
+            exit 1
+          fi
+          
+          echo "✅ All quality thresholds passed"
+
+      - name: Upload evaluation artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-results
+          path: |
+            outputs/eval_result.json
+            outputs/report_*.html
+          retention-days: 30

@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-01-17T05:46:55.885Z",
+  "total_cases": 8,
+  "success_cases": 0,
+  "error_cases": 8,
+  "metrics": {
+    "field_completeness_rate": 0,
+    "citation_coverage_rate": 0,
+    "latency_p95_ms": 0
+  }
+}

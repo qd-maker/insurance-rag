@@ -1,0 +1,108 @@
+{
+  "timestamp": "2026-01-17T02:47:06.095Z",
+  "version": "2.0.0",
+  "metrics": {
+    "field_completeness_rate": 0,
+    "citation_coverage_rate": 100,
+    "citation_validity_rate": 100,
+    "latency_avg_ms": 42359,
+    "latency_p50_ms": 39945,
+    "latency_p95_ms": 65949,
+    "latency_max_ms": 65949,
+    "error_rate": 0,
+    "stability_score": 0,
+    "total_cases": 8,
+    "successful_cases": 8,
+    "avg_citation_count": 6.8
+  },
+  "results": [
+    {
+      "case_id": "1",
+      "query": "【undefined】undefined",
+      "latency_ms": 65949,
+      "has_error": false,
+      "field_exists": false,
+      "field_complete": false,
+      "has_citation": true,
+      "citation_valid": true,
+      "citation_count": 7
+    },
+    {
+      "case_id": "2",
+      "query": "【undefined】undefined",
+      "latency_ms": 39945,
+      "has_error": false,
+      "field_exists": false,
+      "field_complete": false,
+      "has_citation": true,
+      "citation_valid": true,
+      "citation_count": 7
+    },
+    {
+      "case_id": "3",
+      "query": "【undefined】undefined",
+      "latency_ms": 41326,
+      "has_error": false,
+      "field_exists": false,
+      "field_complete": false,
+      "has_citation": true,
+      "citation_valid": true,
+      "citation_count": 9
+    },
+    {
+      "case_id": "4",
+      "query": "【undefined】undefined",
+      "latency_ms": 36070,
+      "has_error": false,
+      "field_exists": false,
+      "field_complete": false,
+      "has_citation": true,
+      "citation_valid": true,
+      "citation_count": 5
+    },
+    {
+      "case_id": "5",
+      "query": "【undefined】undefined",
+      "latency_ms": 42786,
+      "has_error": false,
+      "field_exists": false,
+      "field_complete": false,
+      "has_citation": true,
+      "citation_valid": true,
+      "citation_count": 7
+    },
+    {
+      "case_id": "6",
+      "query": "【undefined】undefined",
+      "latency_ms": 40441,
+      "has_error": false,
+      "field_exists": false,
+      "field_complete": false,
+      "has_citation": true,
+      "citation_valid": true,
+      "citation_count": 5
+    },
+    {
+      "case_id": "7",
+      "query": "【undefined】undefined",
+      "latency_ms": 37979,
+      "has_error": false,
+      "field_exists": false,
+      "field_complete": false,
+      "has_citation": true,
+      "citation_valid": true,
+      "citation_count": 6
+    },
+    {
+      "case_id": "8",
+      "query": "【undefined】undefined",
+      "latency_ms": 34379,
+      "has_error": false,
+      "field_exists": false,
+      "field_complete": false,
+      "has_citation": true,
+      "citation_valid": true,
+      "citation_count": 8
+    }
+  ]
+}
