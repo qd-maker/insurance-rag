@@ -44,3 +44,7 @@ next-env.d.ts
 .cursor/
 .vscode/
 .idea/
+
+# temp files (PDF upload)
+/tmp/
+__pycache__/

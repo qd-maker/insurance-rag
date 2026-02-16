@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import {
     Shield,
@@ -18,7 +18,10 @@ import {
     ChevronDown,
     ChevronUp,
     AlertTriangle,
-    Lock
+    Lock,
+    Pencil,
+    Save,
+    X
 } from 'lucide-react';
 
 type Product = {
@@ -52,6 +55,14 @@ export default function ProductsManagementPage() {
     const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
     const [loadingAudit, setLoadingAudit] = useState(false);
     const [togglingId, setTogglingId] = useState<number | null>(null);
+
+    // 编辑相关状态
+    const [editingId, setEditingId] = useState<number | null>(null);
+    const [editName, setEditName] = useState('');
+    const [editContent, setEditContent] = useState('');
+    const [savingId, setSavingId] = useState<number | null>(null);
+    const [loadingContent, setLoadingContent] = useState(false);
+    const editPanelRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         const savedToken = sessionStorage.getItem('admin_token');
@@ -210,6 +221,72 @@ export default function ProductsManagementPage() {
         }
     }, [isAuthenticated]);
 
+    // 开始编辑（加载条款内容）
+    const startEditing = async (product: Product) => {
+        setEditingId(product.id);
+        setEditName(product.name);
+        setEditContent('');
+        setLoadingContent(true);
+
+        try {
+            const res = await fetch(`/api/products/update?productId=${product.id}`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+            });
+            const data = await res.json();
+            if (data.success) {
+                setEditContent(data.content || '');
+            }
+        } catch { /* ignore */ }
+        setLoadingContent(false);
+        // 等 React 渲染后自动滚动到编辑面板
+        setTimeout(() => {
+            editPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 100);
+    };
+
+    // 取消编辑
+    const cancelEditing = () => {
+        setEditingId(null);
+        setEditName('');
+        setEditContent('');
+    };
+
+    // 保存编辑
+    const saveEdit = async (productId: number) => {
+        const authToken = token.trim();
+        if (!authToken) { setIsAuthenticated(false); return; }
+
+        setSavingId(productId);
+        try {
+            const res = await fetch('/api/products/update', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authToken}`,
+                },
+                body: JSON.stringify({
+                    productId,
+                    name: editName.trim(),
+                    content: editContent.trim(),
+                }),
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                setProducts(prev => prev.map(p =>
+                    p.id === productId ? { ...p, name: editName.trim() } : p
+                ));
+                cancelEditing();
+                if (expandedProductId === productId) loadAuditLogs(productId);
+            } else {
+                alert(data.error || '更新失败');
+            }
+        } catch {
+            alert('网络错误，请重试');
+        } finally {
+            setSavingId(null);
+        }
+    };
+
     // 过滤产品
     const filteredProducts = products.filter(p =>
         p.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -341,7 +418,7 @@ export default function ProductsManagementPage() {
                                 {/* 产品行 */}
                                 <div className="p-4 flex items-center gap-4">
                                     {/* 状态指示 */}
-                                    <div className={`w-3 h-3 rounded-full ${product.is_active ? 'bg-green-500' : 'bg-red-500'}`} />
+                                    <div className={`w-3 h-3 rounded-full shrink-0 ${product.is_active ? 'bg-green-500' : 'bg-red-500'}`} />
 
                                     {/* 产品信息 */}
                                     <div className="flex-1 min-w-0">
@@ -360,7 +437,17 @@ export default function ProductsManagementPage() {
                                     </div>
 
                                     {/* 操作按钮 */}
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                            onClick={() => editingId === product.id ? cancelEditing() : startEditing(product)}
+                                            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${editingId === product.id
+                                                ? 'bg-slate-200 text-slate-800'
+                                                : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                                                }`}
+                                        >
+                                            {editingId === product.id ? <X className="w-4 h-4" /> : <Pencil className="w-4 h-4" />}
+                                            {editingId === product.id ? '收起' : '编辑'}
+                                        </button>
                                         <button
                                             onClick={() => toggleProductStatus(product.id, product.is_active)}
                                             disabled={togglingId === product.id}
@@ -378,7 +465,6 @@ export default function ProductsManagementPage() {
                                             )}
                                             {product.is_active ? '禁用' : '启用'}
                                         </button>
-
                                         <button
                                             onClick={() => toggleExpand(product.id)}
                                             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-slate-50 text-slate-700 hover:bg-slate-100 transition-colors"
@@ -393,6 +479,57 @@ export default function ProductsManagementPage() {
                                         </button>
                                     </div>
                                 </div>
+
+                                {/* 编辑面板 */}
+                                {editingId === product.id && (
+                                    <div ref={editPanelRef} className="border-t border-blue-100 bg-blue-50/30 p-4 space-y-3">
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-600 mb-1">产品名称</label>
+                                            <input
+                                                type="text"
+                                                value={editName}
+                                                onChange={(e) => setEditName(e.target.value)}
+                                                className="w-full px-3 py-2 rounded-lg border border-blue-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none text-sm font-medium text-slate-900 bg-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-600 mb-1">条款内容（修改后将重新生成向量）</label>
+                                            {loadingContent ? (
+                                                <div className="flex items-center gap-2 text-sm text-slate-500 py-4">
+                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                    加载条款内容...
+                                                </div>
+                                            ) : (
+                                                <textarea
+                                                    value={editContent}
+                                                    onChange={(e) => setEditContent(e.target.value)}
+                                                    rows={10}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none text-sm text-slate-800 bg-white font-mono resize-y"
+                                                    placeholder="条款内容"
+                                                />
+                                            )}
+                                        </div>
+                                        <div className="flex items-center gap-2 pt-1">
+                                            <button
+                                                onClick={() => saveEdit(product.id)}
+                                                disabled={savingId === product.id || !editName.trim()}
+                                                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                                            >
+                                                {savingId === product.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                                                {savingId === product.id ? '保存中...' : '保存修改'}
+                                            </button>
+                                            <button
+                                                onClick={cancelEditing}
+                                                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors"
+                                            >
+                                                取消
+                                            </button>
+                                            {savingId === product.id && (
+                                                <span className="text-xs text-yellow-600">正在重新生成向量，请勿关闭页面...</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* 审计日志展开区 */}
                                 {expandedProductId === product.id && (

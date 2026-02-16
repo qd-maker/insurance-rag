@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
     Shield,
     FileText,
@@ -14,7 +14,9 @@ import {
     Database,
     Cpu,
     Sparkles,
-    FileCode2
+    FileCode2,
+    Upload,
+    File as FileIcon
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -56,6 +58,76 @@ export default function AddProductPage() {
     const [message, setMessage] = useState('');
     const [steps, setSteps] = useState<Step[]>([]);
     const [results, setResults] = useState<ApiResponse['results']>(undefined);
+
+    // PDF 上传相关状态
+    const [pdfStatus, setPdfStatus] = useState<'idle' | 'uploading' | 'parsing' | 'done' | 'error'>('idle');
+    const [pdfMessage, setPdfMessage] = useState('');
+    const [pdfFileName, setPdfFileName] = useState('');
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [isDragOver, setIsDragOver] = useState(false);
+
+    const handlePdfUpload = async (file: File) => {
+        if (!file.name.toLowerCase().endsWith('.pdf')) {
+            setPdfStatus('error');
+            setPdfMessage('仅支持 PDF 文件');
+            return;
+        }
+        if (file.size > 50 * 1024 * 1024) {
+            setPdfStatus('error');
+            setPdfMessage('文件过大，最大 50MB');
+            return;
+        }
+
+        setPdfFileName(file.name);
+        setPdfStatus('uploading');
+        setPdfMessage('上传中...');
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            setPdfStatus('parsing');
+            setPdfMessage('Docling 解析中，请稍候...');
+
+            const res = await fetch('/api/admin/parse-pdf', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` },
+                body: formData,
+            });
+
+            const data = await res.json();
+
+            if (!res.ok || !data.success) {
+                setPdfStatus('error');
+                setPdfMessage(data.error || '解析失败');
+                return;
+            }
+
+            // 解析成功，填入表单
+            setContent(data.markdown || '');
+            if (!name.trim() && data.fileName) {
+                setName(data.fileName.replace(/\.pdf$/i, ''));
+            }
+            setPdfStatus('done');
+            setPdfMessage(`解析完成 · ${data.pageCount || '?'} 页 · 可在下方编辑后提交`);
+        } catch {
+            setPdfStatus('error');
+            setPdfMessage('网络错误，请重试');
+        }
+    };
+
+    const handleDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragOver(false);
+        const file = e.dataTransfer.files?.[0];
+        if (file) handlePdfUpload(file);
+    };
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) handlePdfUpload(file);
+        e.target.value = ''; // 允许重复选同一文件
+    };
 
     // 从 sessionStorage 获取并验证 token
     React.useEffect(() => {
@@ -296,18 +368,79 @@ export default function AddProductPage() {
                         />
                     </div>
 
+                    {/* PDF 上传区域 */}
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                            <Upload className="w-4 h-4 inline mr-1" />
+                            上传 PDF 条款（可选）
+                        </label>
+                        <div
+                            onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                            onDragLeave={() => setIsDragOver(false)}
+                            onDrop={handleDrop}
+                            onClick={() => fileInputRef.current?.click()}
+                            className={`relative border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${isDragOver ? 'border-blue-500 bg-blue-50' :
+                                    pdfStatus === 'done' ? 'border-green-300 bg-green-50' :
+                                        pdfStatus === 'error' ? 'border-red-300 bg-red-50' :
+                                            pdfStatus === 'parsing' ? 'border-yellow-300 bg-yellow-50' :
+                                                'border-slate-200 bg-slate-50 hover:border-blue-300 hover:bg-blue-50/50'
+                                }`}
+                        >
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".pdf"
+                                onChange={handleFileChange}
+                                className="hidden"
+                            />
+
+                            {pdfStatus === 'idle' && (
+                                <div className="text-slate-500">
+                                    <Upload className="w-8 h-8 mx-auto mb-2 text-slate-400" />
+                                    <p className="font-medium">拖拽 PDF 到此处，或点击选择文件</p>
+                                    <p className="text-xs mt-1 text-slate-400">支持扫描件和表格识别 · 最大 50MB</p>
+                                </div>
+                            )}
+
+                            {(pdfStatus === 'uploading' || pdfStatus === 'parsing') && (
+                                <div className="text-yellow-700">
+                                    <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin" />
+                                    <p className="font-medium">{pdfMessage}</p>
+                                    <p className="text-xs mt-1">{pdfFileName}</p>
+                                </div>
+                            )}
+
+                            {pdfStatus === 'done' && (
+                                <div className="text-green-700">
+                                    <CheckCircle2 className="w-8 h-8 mx-auto mb-2" />
+                                    <p className="font-medium">{pdfMessage}</p>
+                                    <p className="text-xs mt-1 text-green-600">{pdfFileName} · 点击可重新上传</p>
+                                </div>
+                            )}
+
+                            {pdfStatus === 'error' && (
+                                <div className="text-red-700">
+                                    <XCircle className="w-8 h-8 mx-auto mb-2" />
+                                    <p className="font-medium">{pdfMessage}</p>
+                                    <p className="text-xs mt-1 text-red-500">点击重新选择文件</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
                     {/* 产品内容 */}
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-2">
                             产品内容 / 条款描述
+                            {pdfStatus === 'done' && <span className="text-green-600 ml-2 text-xs">✅ 已从 PDF 提取</span>}
                         </label>
                         <textarea
                             value={content}
                             onChange={(e) => setContent(e.target.value)}
-                            placeholder="请输入产品的完整描述，包括保障内容、赔付条件、除外责任等..."
-                            rows={8}
+                            placeholder="请输入产品的完整描述，或上传 PDF 自动提取..."
+                            rows={12}
                             disabled={status === 'loading'}
-                            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all text-slate-900 placeholder:text-slate-400 resize-none disabled:bg-slate-100"
+                            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all text-slate-900 placeholder:text-slate-400 resize-y disabled:bg-slate-100 font-mono text-sm"
                         />
                     </div>
 
