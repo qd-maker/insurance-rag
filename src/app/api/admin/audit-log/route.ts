@@ -1,22 +1,10 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { AuditLogQuerySchema, validateRequest, validationErrorResponse, type AuditLogEntry } from '@/lib/schemas';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-type AuditLogEntry = {
-    id: number;
-    product_id: number | null;
-    action: string;
-    operator: string;
-    operator_ip: string | null;
-    before_snapshot: any;
-    after_snapshot: any;
-    created_at: string;
-    notes: string | null;
-    product_name?: string;
-};
 
 export async function GET(req: Request) {
     // ============ 1. 验证 Token ============
@@ -31,11 +19,18 @@ export async function GET(req: Request) {
         return NextResponse.json({ error: '认证失败：Token 无效' }, { status: 401 });
     }
 
-    // ============ 2. 解析查询参数 ============
+    // ============ 2. Schema 校验查询参数 ============
     const url = new URL(req.url);
-    const productId = url.searchParams.get('productId');
-    const limit = parseInt(url.searchParams.get('limit') || '50', 10);
-    const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+    const params = {
+        productId: url.searchParams.get('productId') ?? undefined,
+        limit: url.searchParams.get('limit') ?? undefined,
+        offset: url.searchParams.get('offset') ?? undefined,
+    };
+    const parsed = validateRequest(AuditLogQuerySchema, params);
+    if (!parsed.success) {
+        return validationErrorResponse(parsed.error);
+    }
+    const { productId, limit, offset } = parsed.data;
 
     // ============ 3. 环境检查 ============
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -52,7 +47,7 @@ export async function GET(req: Request) {
             .range(offset, offset + limit - 1);
 
         if (productId) {
-            query = query.eq('product_id', parseInt(productId, 10));
+            query = query.eq('product_id', productId);
         }
 
         const { data: logs, error, count } = await query;

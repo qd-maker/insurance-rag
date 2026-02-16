@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS public.clauses (
   id BIGSERIAL PRIMARY KEY,
   product_id BIGINT REFERENCES public.products(id) ON DELETE CASCADE,
   content TEXT NOT NULL,
-  embedding vector(1536),
+  embedding vector(1024),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -32,7 +32,7 @@ WITH (m = 16, ef_construction = 64);
 
 -- ============ match_clauses RPC 函数 ============
 CREATE OR REPLACE FUNCTION public.match_clauses(
-  query_embedding vector(1536),
+  query_embedding vector(1024),
   match_threshold float DEFAULT 0.3,
   match_count int DEFAULT 10
 )

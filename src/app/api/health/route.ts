@@ -136,6 +136,52 @@ export async function GET() {
 
   checks.rag_pipeline = ragCheck;
 
+  // 缓存健康检查
+  const cacheCheck = { ok: false, message: '', details: {} as any };
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { persistSession: false } }
+    );
+
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    // 查询缓存统计
+    const { data: cacheData, error: cacheErr } = await supabase
+      .from('search_cache')
+      .select('id, hit_count, expires_at, created_at');
+
+    if (cacheErr) {
+      cacheCheck.message = `缓存查询失败: ${cacheErr.message}`;
+    } else {
+      const entries = cacheData || [];
+      const expiredCount = entries.filter(e => new Date(e.expires_at) < now).length;
+      const activeCount = entries.length - expiredCount;
+
+      // 24小时命中率
+      const recent = entries.filter(e => new Date(e.created_at) > yesterday);
+      const hits24h = recent.reduce((sum, e) => sum + (e.hit_count || 0), 0);
+      const hitRate24h = recent.length > 0
+        ? ((hits24h / (hits24h + recent.length)) * 100).toFixed(1)
+        : '0.0';
+
+      cacheCheck.ok = true;
+      cacheCheck.message = `缓存系统正常 (${activeCount} 活跃, ${expiredCount} 过期)`;
+      cacheCheck.details = {
+        enabled: process.env.ENABLE_SEARCH_CACHE === 'true',
+        hitRate24h: `${hitRate24h}%`,
+        activeCount,
+        expiredCount,
+      };
+    }
+  } catch (e: any) {
+    cacheCheck.message = `缓存检查异常: ${e?.message}`;
+  }
+
+  checks.cache = cacheCheck;
+
   return NextResponse.json(
     {
       status: overallStatus,

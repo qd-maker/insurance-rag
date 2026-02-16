@@ -4,6 +4,7 @@ import path from 'path';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { embedText } from '@/lib/embeddings';
+import { ProductAddRequestSchema, parseAndValidate } from '@/lib/schemas';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -65,23 +66,12 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: '认证失败：Token 无效' }, { status: 401 });
     }
 
-    // ============ 2. 解析请求体 ============
-    let body: { name?: string; content?: string };
-    try {
-        body = await req.json();
-    } catch {
-        return NextResponse.json({ error: '请求格式错误' }, { status: 400 });
+    // ============ 2. Schema 校验 ============
+    const parsed = await parseAndValidate(req, ProductAddRequestSchema);
+    if (!parsed.success) {
+        return parsed.response;
     }
-
-    const { name, content } = body;
-
-    if (!name?.trim()) {
-        return NextResponse.json({ error: '产品名称不能为空' }, { status: 400 });
-    }
-
-    if (!content?.trim()) {
-        return NextResponse.json({ error: '产品内容不能为空' }, { status: 400 });
-    }
+    const { name, content } = parsed.data;
 
     // ============ 3. 环境检查 ============
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {

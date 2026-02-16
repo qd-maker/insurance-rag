@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { ProductToggleRequestSchema, parseAndValidate } from '@/lib/schemas';
+import { getCacheKey } from '@/lib/retrieval';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -18,23 +20,12 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: '认证失败：Token 无效' }, { status: 401 });
     }
 
-    // ============ 2. 解析请求体 ============
-    let body: { productId?: number; active?: boolean; notes?: string };
-    try {
-        body = await req.json();
-    } catch {
-        return NextResponse.json({ error: '请求格式错误' }, { status: 400 });
+    // ============ 2. Schema 校验 ============
+    const parsed = await parseAndValidate(req, ProductToggleRequestSchema);
+    if (!parsed.success) {
+        return parsed.response;
     }
-
-    const { productId, active, notes } = body;
-
-    if (typeof productId !== 'number') {
-        return NextResponse.json({ error: 'productId 必须是数字' }, { status: 400 });
-    }
-
-    if (typeof active !== 'boolean') {
-        return NextResponse.json({ error: 'active 必须是布尔值' }, { status: 400 });
-    }
+    const { productId, active, notes } = parsed.data;
 
     // ============ 3. 环境检查 ============
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -67,6 +58,34 @@ export async function POST(req: Request) {
             throw new Error(`更新失败: ${updateErr.message}`);
         }
 
+        // ============ 自动清除该产品的缓存 ============
+        let cacheCleared = 0;
+        try {
+            const cacheKey = getCacheKey(product.name);
+
+            // 按 query_hash 清除
+            const { data: deletedByHash } = await supabase
+                .from('search_cache')
+                .delete()
+                .eq('query_hash', cacheKey)
+                .select('id');
+
+            // 按 query_text 清除（兼容）
+            const { data: deletedByText } = await supabase
+                .from('search_cache')
+                .delete()
+                .ilike('query_text', `%${product.name}%`)
+                .select('id');
+
+            cacheCleared = (deletedByHash?.length || 0) + (deletedByText?.length || 0);
+
+            if (cacheCleared > 0) {
+                console.log(`[Cache] 产品 "${product.name}" 状态变更，已清除 ${cacheCleared} 条缓存`);
+            }
+        } catch (cacheErr: any) {
+            console.warn('[Cache] 清除缓存失败:', cacheErr.message);
+        }
+
         // 写入审计日志
         const operatorName = req.headers.get('X-Operator-Name') || 'admin';
         const operatorIp = req.headers.get('X-Forwarded-For') || req.headers.get('X-Real-IP') || 'unknown';
@@ -80,6 +99,7 @@ export async function POST(req: Request) {
                 before_snapshot: { is_active: beforeActive },
                 after_snapshot: { is_active: active },
                 notes: notes || null,
+                cache_cleared: cacheCleared,
             });
         } catch (auditErr: any) {
             console.warn('[Audit] 写入审计日志失败:', auditErr.message);

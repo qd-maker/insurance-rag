@@ -82,21 +82,6 @@ type SearchResult = {
 
 // ==================== 加载步骤组件 ====================
 
-function LoadingStep({ icon, text, done, active }: {
-  icon: string;
-  text: string;
-  done?: boolean;
-  active?: boolean;
-}) {
-  return (
-    <div className={`flex items-center gap-3 py-2 px-3 rounded-xl transition-all ${active ? 'bg-blue-100 text-blue-700' : done ? 'text-green-600' : 'text-slate-400'
-      }`}>
-      <span className={`text-lg ${active ? 'animate-pulse' : ''}`}>{icon}</span>
-      <span className={`text-sm ${done ? 'font-medium' : ''}`}>{text}</span>
-      {active && <div className="ml-auto w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />}
-    </div>
-  );
-}
 
 // ==================== 引用徽章组件 ====================
 
@@ -297,15 +282,14 @@ export default function App() {
         setResult(data as SearchResult);
       }
 
-      // 延迟滚动
-      setTimeout(() => {
-        resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 300);
-
     } catch (error) {
       console.error('搜索失败', error);
     } finally {
       setLoading(false);
+      // 结果渲染后自动滚动
+      setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 200);
     }
   };
 
@@ -498,37 +482,6 @@ export default function App() {
 
         {/* 结果展示区 - 增加上边距避免被下拉框遮挡 */}
         <div ref={resultsRef} className="mt-64 pt-16 relative">
-
-          {loading && (
-            <div className="max-w-xl mx-auto animate-fade-in-up">
-              {/* 主加载卡片 */}
-              <div className="bg-white rounded-3xl shadow-xl border border-slate-100 p-8 text-center">
-                {/* 动态加载动画 */}
-                <div className="relative w-20 h-20 mx-auto mb-6">
-                  <div className="absolute inset-0 rounded-full border-4 border-slate-100" />
-                  <div className="absolute inset-0 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
-                  <div className="absolute inset-2 rounded-full border-4 border-purple-400 border-b-transparent animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
-                  <div className="absolute inset-4 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center">
-                    <Sparkles className="w-6 h-6 text-white animate-pulse" />
-                  </div>
-                </div>
-
-                <h3 className="text-xl font-bold text-slate-900 mb-2">AI 正在深度分析</h3>
-                <p className="text-slate-500 text-sm mb-6">正在从保险条款中提取关键信息...</p>
-
-                {/* 进度步骤 */}
-                <div className="space-y-3 text-left bg-slate-50 rounded-2xl p-4">
-                  <LoadingStep icon="✓" text="产品信息已匹配" done />
-                  <LoadingStep icon="✓" text="条款内容已检索" done />
-                  <LoadingStep icon="⏳" text="AI 正在分析核心保障..." active />
-                  <LoadingStep icon="○" text="生成销售话术" />
-                  <LoadingStep icon="○" text="整合结果" />
-                </div>
-
-                <p className="text-xs text-slate-400 mt-4">首次分析约需 30-60 秒，后续将从缓存快速获取</p>
-              </div>
-            </div>
-          )}
 
           {searchNotFound && (
             <div className="p-12 rounded-3xl bg-white border border-dashed border-slate-200 text-center animate-fade-in-up max-w-2xl mx-auto">

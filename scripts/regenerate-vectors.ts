@@ -20,10 +20,14 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function regenerateVectors() {
-    console.log('🔧 开始修复缺失的向量数据\n');
+    // --missing 参数：仅处理缺失向量的条款；默认全量重生成
+    const missingOnly = process.argv.includes('--missing');
+    const mode = missingOnly ? '仅缺失向量' : '全量重生成（模型/维度迁移）';
+
+    console.log(`🔧 向量生成模式: ${mode}\n`);
     console.log(`使用模型: ${EMBEDDING_MODEL}\n`);
 
-    // 1. 查找所有没有向量的条款（检查更精确）
+    // 1. 查询所有条款
     const { data: allClauses, error } = await supabase
         .from('clauses')
         .select('id, product_id, content, embedding');
@@ -33,15 +37,15 @@ async function regenerateVectors() {
         return;
     }
 
-    // 过滤出真正没有向量的条款
-    const clausesWithoutVectors = allClauses?.filter(c => {
-        return !c.embedding || !Array.isArray(c.embedding) || c.embedding.length === 0;
-    }) || [];
+    // 2. 根据模式筛选需要处理的条款
+    const clausesToProcess = missingOnly
+        ? (allClauses?.filter(c => !c.embedding || !Array.isArray(c.embedding) || c.embedding.length === 0) || [])
+        : (allClauses || []);
 
-    console.log(`发现 ${clausesWithoutVectors?.length || 0} 条缺失向量的条款\n`);
+    console.log(`总条款: ${allClauses?.length || 0} 条，待处理: ${clausesToProcess.length} 条\n`);
 
-    if (!clausesWithoutVectors || clausesWithoutVectors.length === 0) {
-        console.log('✅ 所有条款都已有向量！');
+    if (clausesToProcess.length === 0) {
+        console.log('✅ 无需处理的条款！');
         return;
     }
 
@@ -49,7 +53,7 @@ async function regenerateVectors() {
     let success = 0;
     let failed = 0;
 
-    for (const clause of clausesWithoutVectors) {
+    for (const clause of clausesToProcess) {
         try {
             console.log(`处理条款 #${clause.id}...`);
 

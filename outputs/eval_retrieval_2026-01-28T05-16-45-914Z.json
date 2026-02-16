@@ -1,0 +1,89 @@
+{
+  "totalCases": 8,
+  "productHitRate": 0,
+  "topKRecall": 0,
+  "contaminationRate": 0,
+  "avgRetrievalTime": 3101.875,
+  "details": [
+    {
+      "query": "安心无忧医疗险",
+      "expectedProduct": "安心无忧医疗险",
+      "matchedProduct": null,
+      "strategy": "FAILED",
+      "hit": false,
+      "topKRecall": 0,
+      "contamination": 0,
+      "retrievalTime": 4479
+    },
+    {
+      "query": "康宁保重疾险",
+      "expectedProduct": "康宁保重疾险",
+      "matchedProduct": null,
+      "strategy": "FAILED",
+      "hit": false,
+      "topKRecall": 0,
+      "contamination": 0,
+      "retrievalTime": 3538
+    },
+    {
+      "query": "惠民安心守护重大疾病险（旗舰版）",
+      "expectedProduct": "惠民安心守护重大疾病险（旗舰版）",
+      "matchedProduct": null,
+      "strategy": "FAILED",
+      "hit": false,
+      "topKRecall": 0,
+      "contamination": 0,
+      "retrievalTime": 2985
+    },
+    {
+      "query": "乐享年金险",
+      "expectedProduct": "乐享年金险",
+      "matchedProduct": null,
+      "strategy": "FAILED",
+      "hit": false,
+      "topKRecall": 0,
+      "contamination": 0,
+      "retrievalTime": 3380
+    },
+    {
+      "query": "安心无忧医疗险",
+      "expectedProduct": "安心无忧医疗险",
+      "matchedProduct": null,
+      "strategy": "FAILED",
+      "hit": false,
+      "topKRecall": 0,
+      "contamination": 0,
+      "retrievalTime": 2419
+    },
+    {
+      "query": "安心无忧医疗险",
+      "expectedProduct": "安心无忧医疗险",
+      "matchedProduct": null,
+      "strategy": "FAILED",
+      "hit": false,
+      "topKRecall": 0,
+      "contamination": 0,
+      "retrievalTime": 5398
+    },
+    {
+      "query": "康宁保重疾险",
+      "expectedProduct": "康宁保重疾险",
+      "matchedProduct": null,
+      "strategy": "FAILED",
+      "hit": false,
+      "topKRecall": 0,
+      "contamination": 0,
+      "retrievalTime": 1263
+    },
+    {
+      "query": "惠民安心守护重大疾病险（旗舰版）",
+      "expectedProduct": "惠民安心守护重大疾病险（旗舰版）",
+      "matchedProduct": null,
+      "strategy": "FAILED",
+      "hit": false,
+      "topKRecall": 0,
+      "contamination": 0,
+      "retrievalTime": 1353
+    }
+  ]
+}
