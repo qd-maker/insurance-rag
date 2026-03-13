@@ -561,7 +561,9 @@ export default function App() {
                           )}
                         </div>
                         <div className="text-xs font-bold text-blue-600 uppercase tracking-widest mb-3">{item.title}</div>
-                        <div className="text-sm text-slate-600 leading-relaxed">{renderWithFallback(item.desc)}</div>
+                        {!isFallback(item.desc) && (
+                          <div className="text-sm text-slate-600 leading-relaxed">{item.desc}</div>
+                        )}
                       </div>
                     ))}
                   </div>
