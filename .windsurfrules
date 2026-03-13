@@ -1,13 +1,13 @@
 # Available Tools
 
-## husi_fabo
+## riqovik_gixud
 
 Parameters:
 - summary (required): Put your COMPLETE response here in Markdown format (supports tables, code blocks, lists)
 - reason (optional)
 
-ALWAYS call husi_fabo at the end of EVERY response.
+ALWAYS call riqovik_gixud at the end of EVERY response.
 
 ## Format
 
-{"tool": "husi_fabo", "arguments": {"summary": "Your full Markdown response here"}}
+{"tool": "riqovik_gixud", "arguments": {"summary": "Your full Markdown response here"}}
