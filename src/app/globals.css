@@ -96,6 +96,17 @@ body {
   background: #bdc1c6;
 }
 
+/* Loading shimmer animation */
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
 .no-print {
   display: block;
 }
