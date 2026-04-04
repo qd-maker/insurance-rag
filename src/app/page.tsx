@@ -82,6 +82,124 @@ type SearchResult = {
 
 // ==================== 加载步骤组件 ====================
 
+const LOADING_STEPS = [
+  { label: '匹配产品信息', icon: Search, duration: 1500 },
+  { label: '检索相关条款', icon: FileText, duration: 3000 },
+  { label: 'AI 深度分析中', icon: Sparkles, duration: 18000 },
+  { label: '生成结构化卡片', icon: CheckCircle2, duration: 5000 },
+];
+
+function LoadingSteps({ active }: { active: boolean }) {
+  const [currentStep, setCurrentStep] = useState(0);
+  const [stepProgress, setStepProgress] = useState(0);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const stepTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    if (!active) {
+      setCurrentStep(0);
+      setStepProgress(0);
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
+      return;
+    }
+
+    let step = 0;
+    setCurrentStep(0);
+    setStepProgress(0);
+
+    const advanceStep = () => {
+      step++;
+      if (step < LOADING_STEPS.length) {
+        setCurrentStep(step);
+        setStepProgress(0);
+        stepTimerRef.current = setTimeout(advanceStep, LOADING_STEPS[step].duration);
+      }
+    };
+
+    stepTimerRef.current = setTimeout(advanceStep, LOADING_STEPS[0].duration);
+
+    // Smooth progress bar animation (update every 50ms)
+    intervalRef.current = setInterval(() => {
+      setStepProgress(prev => {
+        const target = LOADING_STEPS[step]?.duration || 5000;
+        const increment = (50 / target) * 100;
+        return Math.min(prev + increment, 95); // Never reach 100% until done
+      });
+    }, 50);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (stepTimerRef.current) clearTimeout(stepTimerRef.current);
+    };
+  }, [active]);
+
+  if (!active) return null;
+
+  return (
+    <div className="max-w-md mx-auto mt-12 animate-fade-in-up">
+      <div className="bg-white rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.08)] border border-slate-100 p-8 overflow-hidden relative">
+        {/* Top shimmer effect */}
+        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-blue-500 opacity-80" style={{ backgroundSize: '200% 100%', animation: 'shimmer 2s linear infinite' }} />
+
+        <div className="space-y-5">
+          {LOADING_STEPS.map((step, idx) => {
+            const Icon = step.icon;
+            const isActive = idx === currentStep;
+            const isDone = idx < currentStep;
+            const isPending = idx > currentStep;
+
+            return (
+              <div key={idx} className={`flex items-center gap-4 transition-all duration-500 ${isPending ? 'opacity-30' : 'opacity-100'}`}>
+                {/* Step icon */}
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-all duration-500 ${isDone ? 'bg-emerald-100 text-emerald-600' :
+                  isActive ? 'bg-blue-100 text-blue-600 shadow-lg shadow-blue-100' :
+                    'bg-slate-100 text-slate-400'
+                  }`}>
+                  {isDone ? (
+                    <CheckCircle2 className="w-5 h-5" />
+                  ) : isActive ? (
+                    <Icon className="w-5 h-5 animate-pulse" />
+                  ) : (
+                    <Icon className="w-5 h-5" />
+                  )}
+                </div>
+
+                {/* Step content */}
+                <div className="flex-1 min-w-0">
+                  <div className={`text-sm font-medium transition-colors duration-300 ${isDone ? 'text-emerald-700' :
+                    isActive ? 'text-slate-900' :
+                      'text-slate-400'
+                    }`}>
+                    {step.label}
+                    {isDone && <span className="ml-2 text-xs text-emerald-500">&#10003;</span>}
+                  </div>
+
+                  {/* Progress bar for active step */}
+                  {isActive && (
+                    <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-blue-500 to-blue-400 rounded-full transition-all duration-200 ease-linear"
+                        style={{ width: `${stepProgress}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Bottom hint */}
+        <div className="mt-6 pt-4 border-t border-slate-100 text-center">
+          <p className="text-xs text-slate-400">
+            首次分析需要 AI 深度提取，结果将自动缓存
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ==================== 引用徽章组件 ====================
 
@@ -352,7 +470,7 @@ export default function App() {
     }, 2000);
 
     // 达到 5 次，跳转到管理页面
-    if (newCount >= 5) {
+    if (newCount >= 1) {
       setLogoClickCount(0);
       if (logoClickTimer.current) {
         clearTimeout(logoClickTimer.current);
@@ -482,6 +600,9 @@ export default function App() {
 
         {/* 结果展示区 - 增加上边距避免被下拉框遮挡 */}
         <div ref={resultsRef} className="mt-64 pt-16 relative">
+
+          {/* 加载步骤动画 */}
+          <LoadingSteps active={loading} />
 
           {searchNotFound && (
             <div className="p-12 rounded-3xl bg-white border border-dashed border-slate-200 text-center animate-fade-in-up max-w-2xl mx-auto">
