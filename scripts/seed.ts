@@ -6,6 +6,7 @@ dotenv.config();
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { embedText } from '../src/lib/embeddings';
+import { splitClausesBySection } from '../src/lib/chunking';
 
 // 从本地数据文件读取待插入的数据
 // 请在 scripts/seedData.ts 中导出 productsToInsert 数组
@@ -43,9 +44,9 @@ function normalize(s: string) {
 // 工具函数：为文本生成向量（使用多模态 API）
 async function embed(text: string): Promise<number[]> {
   const embedding = await embedText(text, { model: EMBEDDING_MODEL });
-  const expectedDim = 1536;
+  const expectedDim = Number(process.env.EMBEDDING_DIM || '1024');
   if (embedding.length !== expectedDim) {
-    console.warn(`警告：embedding 维度为 ${embedding.length}，表定义为 ${expectedDim}。`);
+    console.warn(`警告：embedding 维度为 ${embedding.length}，期望 ${expectedDim}。`);
   }
   return embedding;
 }
@@ -109,11 +110,15 @@ async function main() {
           console.log(`  AI 提取 description 完成`);
         }
 
-        // ✅ 关键修改：直接使用原始 content 作为单条完整条款
-        // 不再依赖 AI 提取简化版，避免信息丢失
+        // ✅ 语义分段：按【标题】切分为多条独立条款
+        // 每条保留段落标题，便于向量检索精准命中
         if (!clauses || clauses.length === 0) {
-          clauses = [content.trim()];
-          console.log(`  使用完整原始内容作为条款（避免信息丢失）`);
+          clauses = splitClausesBySection(content.trim(), name);
+          if (clauses.length > 1) {
+            console.log(`  已按段落切分为 ${clauses.length} 条条款`);
+          } else {
+            console.log(`  使用完整原始内容作为条款（无可切分段落）`);
+          }
         }
       }
 
@@ -159,27 +164,21 @@ async function main() {
         console.log(`  已创建产品（id=${productId}）`);
       }
 
-      // 写入条款（去重：同产品下 content 完全一致则跳过）
+      // 先删除该产品的所有旧条款（全量替换，避免碎片残留）
+      const { error: delErr } = await supabase
+        .from('clauses')
+        .delete()
+        .eq('product_id', productId);
+      if (delErr) {
+        console.warn(`  清理旧条款失败: ${delErr.message}，将继续写入`);
+      }
+
+      // 写入新条款（逐条生成 embedding）
       for (const [ci, contentItem] of (clauses || []).entries()) {
         const text = (contentItem || '').trim();
         if (!text) {
           console.warn(`  条款第 ${ci + 1} 条为空，已跳过`);
           summary.clauses.skipped++;
-          continue;
-        }
-
-        // 先查重再嵌入，避免不必要的 embedding 成本
-        const { count: dupCount, error: dupErr } = await supabase
-          .from('clauses')
-          .select('id', { count: 'exact', head: true })
-          .eq('product_id', productId)
-          .eq('content', text);
-        if (dupErr) {
-          console.warn(`  查重失败（第 ${ci + 1} 条）：${dupErr.message}，将尝试继续写入`);
-        }
-        if ((dupCount ?? 0) > 0) {
-          summary.clauses.skipped++;
-          console.log(`  [${ci + 1}/${clauses.length}] 已存在，跳过`);
           continue;
         }
 
@@ -293,6 +292,19 @@ async function main() {
     }
   }
   // ========== 自动向量生成结束 ==========
+
+  // ========== 清空搜索缓存 ==========
+  console.log('\n🔧 清空 search_cache（避免旧缓存干扰）...');
+  try {
+    const { error: cacheErr } = await supabase
+      .from('search_cache')
+      .delete()
+      .neq('id', 0);
+    if (cacheErr) throw cacheErr;
+    console.log('✅ search_cache 已清空');
+  } catch (e: any) {
+    console.log(`⚠️ 清空缓存失败（可能表不存在）: ${e.message}`);
+  }
 }
 
 main().catch((err) => {

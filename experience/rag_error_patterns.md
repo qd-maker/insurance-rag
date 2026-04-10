@@ -1,4 +1,4 @@
-﻿# RAG 系统开发通用错误模式与解决方案（Engineering Edition）
+# RAG 系统开发通用错误模式与解决方案（Engineering Edition）
 
 > **定位**  
 > 本文档用于沉淀 RAG（Retrieval-Augmented Generation）系统的**通用工程经验与设计方法论**，  
