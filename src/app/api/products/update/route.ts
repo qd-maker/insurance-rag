@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { embedText } from '@/lib/embeddings';
+import { splitClausesBySection } from '@/lib/chunking';
+import { normalizeProductName } from '@/lib/retrieval';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -60,29 +62,32 @@ export async function POST(req: Request) {
     let clauseUpdated = false;
     if (content !== undefined && content.trim()) {
         try {
-            const embedding = await embedText(content.trim(), { model: EMBEDDING_MODEL });
-
-            // 查找该产品现有条款
-            const { data: existingClause } = await supabase
-                .from('clauses')
-                .select('id')
-                .eq('product_id', productId)
-                .single();
-
-            if (existingClause) {
-                const { error } = await supabase
-                    .from('clauses')
-                    .update({ content: content.trim(), embedding })
-                    .eq('id', existingClause.id);
-
-                if (error) throw new Error(error.message);
-            } else {
-                const { error } = await supabase
-                    .from('clauses')
-                    .insert({ product_id: productId, content: content.trim(), embedding });
-
-                if (error) throw new Error(error.message);
+            // 语义分段：按【标题】切分为多条独立条款
+            const sections = splitClausesBySection(content.trim(), name?.trim() || product.name);
+            const embeddings: number[][] = [];
+            for (const section of sections) {
+                const emb = await embedText(section, { model: EMBEDDING_MODEL });
+                embeddings.push(emb);
             }
+
+            // 先删除该产品的所有旧条款（全量替换，避免碎片残留）
+            await supabase
+                .from('clauses')
+                .delete()
+                .eq('product_id', productId);
+
+            // 批量插入新条款
+            const clauseRows = sections.map((section, i) => ({
+                product_id: productId,
+                content: section,
+                embedding: embeddings[i],
+            }));
+
+            const { error: insertErr } = await supabase
+                .from('clauses')
+                .insert(clauseRows);
+
+            if (insertErr) throw new Error(insertErr.message);
             clauseUpdated = true;
         } catch (err: any) {
             return NextResponse.json({
@@ -90,6 +95,15 @@ export async function POST(req: Request) {
             }, { status: 500 });
         }
     }
+
+    // 2.5 清除该产品的搜索缓存
+    try {
+        const cacheKey = normalizeProductName(name?.trim() || product.name);
+        await supabase
+            .from('search_cache')
+            .delete()
+            .eq('query_hash', cacheKey);
+    } catch { /* 缓存清除失败不阻断 */ }
 
     // 3. 写审计日志
     try {
@@ -129,15 +143,19 @@ export async function GET(req: Request) {
 
     const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
 
-    const { data: clause } = await supabase
+    const { data: clauses } = await supabase
         .from('clauses')
         .select('id, content')
         .eq('product_id', parseInt(productId))
-        .single();
+        .order('id');
+
+    // 多条条款拼接返回，编辑时作为完整文本展示
+    const allContent = (clauses || []).map(c => c.content || '').join('\n');
 
     return NextResponse.json({
         success: true,
-        content: clause?.content || '',
-        clauseId: clause?.id || null,
+        content: allContent,
+        clauseCount: clauses?.length || 0,
+        clauseId: clauses?.[0]?.id || null,
     });
 }

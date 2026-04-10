@@ -5,6 +5,8 @@ import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { embedText } from '@/lib/embeddings';
 import { ProductAddRequestSchema, parseAndValidate } from '@/lib/schemas';
+import { splitClausesBySection } from '@/lib/chunking';
+import { normalizeProductName } from '@/lib/retrieval';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -89,8 +91,9 @@ export async function POST(req: Request) {
         { step: '保存到 seedData.ts', status: 'pending' },
         { step: 'AI 抽取产品描述', status: 'pending' },
         { step: '写入产品数据库', status: 'pending' },
-        { step: '生成向量嵌入', status: 'pending' },
+        { step: '语义分段 + 生成向量', status: 'pending' },
         { step: '写入条款和向量', status: 'pending' },
+        { step: '清除旧缓存', status: 'pending' },
     ];
 
     const results: { productId?: number; clauseId?: number; error?: string } = {};
@@ -176,54 +179,60 @@ export async function POST(req: Request) {
         results.productId = productId;
         steps[2].status = 'done';
 
-        // ============ Step 4: 生成向量嵌入 ============
+        // ============ Step 4: 语义分段 + 生成向量 ============
         steps[3].status = 'running';
 
-        const embedding = await embedText(content.trim(), { model: EMBEDDING_MODEL });
+        // 按【标题】切分为多条独立条款
+        const sections = splitClausesBySection(content.trim(), name.trim());
+        const embeddings: number[][] = [];
+        for (const section of sections) {
+            const emb = await embedText(section, { model: EMBEDDING_MODEL });
+            embeddings.push(emb);
+        }
         steps[3].status = 'done';
-        steps[3].detail = `向量维度: ${embedding.length}`;
+        steps[3].detail = `${sections.length} 段, 向量维度: ${embeddings[0]?.length || 0}`;
 
         // ============ Step 5: 写入条款和向量 ============
         steps[4].status = 'running';
 
-        // 检查该条款是否已存在
-        const { data: existingClause } = await supabase
+        // 先删除该产品的所有旧条款（全量替换，避免碎片残留）
+        const { error: deleteError } = await supabase
             .from('clauses')
-            .select('id')
-            .eq('product_id', productId)
-            .single();
+            .delete()
+            .eq('product_id', productId);
+        if (deleteError) throw new Error(`清理旧条款失败: ${deleteError.message}`);
 
-        if (existingClause) {
-            // 更新现有条款
-            const { error: updateError } = await supabase
-                .from('clauses')
-                .update({
-                    content: content.trim(),
-                    embedding
-                })
-                .eq('id', existingClause.id);
+        // 批量插入新条款
+        const clauseRows = sections.map((section, i) => ({
+            product_id: productId,
+            content: section,
+            embedding: embeddings[i],
+        }));
 
-            if (updateError) throw new Error(`更新条款失败: ${updateError.message}`);
-            results.clauseId = existingClause.id;
-            steps[4].detail = `更新条款 ID: ${existingClause.id}`;
-        } else {
-            // 创建新条款
-            const { data: newClause, error: insertError } = await supabase
-                .from('clauses')
-                .insert({
-                    product_id: productId,
-                    content: content.trim(),
-                    embedding
-                })
-                .select('id')
-                .single();
+        const { data: insertedClauses, error: insertError } = await supabase
+            .from('clauses')
+            .insert(clauseRows)
+            .select('id');
 
-            if (insertError) throw new Error(`创建条款失败: ${insertError.message}`);
-            results.clauseId = newClause.id;
-            steps[4].detail = `新建条款 ID: ${newClause.id}`;
-        }
-
+        if (insertError) throw new Error(`写入条款失败: ${insertError.message}`);
+        results.clauseId = insertedClauses?.[0]?.id;
+        steps[4].detail = `写入 ${insertedClauses?.length || 0} 条条款`;
         steps[4].status = 'done';
+
+        // ============ Step 6: 清除旧缓存 ============
+        steps[5].status = 'running';
+        try {
+            const cacheKey = normalizeProductName(name.trim());
+            await supabase
+                .from('search_cache')
+                .delete()
+                .eq('query_hash', cacheKey);
+            steps[5].status = 'done';
+            steps[5].detail = '已清除该产品缓存';
+        } catch {
+            steps[5].status = 'done';
+            steps[5].detail = '缓存表不存在或无旧缓存';
+        }
 
         // ============ Step 6: 写入审计日志 ============
         const operatorName = req.headers.get('X-Operator-Name') || 'admin';
