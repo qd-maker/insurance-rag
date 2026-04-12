@@ -13,6 +13,9 @@ const RETRIEVAL_TOP_K = Number(process.env.RETRIEVAL_TOP_K || '10');
 const RETRIEVAL_THRESHOLD = Number(process.env.RETRIEVAL_THRESHOLD || '0.3');
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 
+// 检索版本号：每次检索策略变更时递增，用于自动失效旧缓存
+const RETRIEVAL_VERSION = 'v2';
+
 // ========== 类型定义 ==========
 
 export interface RetrievalOptions {
@@ -67,7 +70,7 @@ export function normalizeProductName(name: string): string {
  * 生成缓存键（以产品名为键）
  */
 export function getCacheKey(productName: string): string {
-    return normalizeProductName(productName);
+    return `${RETRIEVAL_VERSION}:${normalizeProductName(productName)}`;
 }
 
 // ========== 核心检索函数 ==========
@@ -113,7 +116,33 @@ export async function hybridRetrieve(
             }
         }
 
-        // ========== 阶段 2：向量检索 ==========
+        // ========== 阶段 1.5：产品名命中 → 全量条款直取（Level 1 完全隔离） ==========
+        // 已知产品做结构化摘要场景，不依赖全库向量排序，直接按 product_id 取全量 chunk
+        if (priorityProductIds.length > 0) {
+            const { data: productClauses, error: clauseErr } = await supabase
+                .from('clauses')
+                .select('id, product_id, content')
+                .in('product_id', priorityProductIds)
+                .order('id', { ascending: true });
+
+            if (!clauseErr && productClauses && productClauses.length > 0) {
+                console.log(`[混合检索] 产品名命中，全量直取 ${productClauses.length} 条条款（跳过向量检索）`);
+                const result: RetrievalResult = {
+                    rows: productClauses,
+                    priorityProductIds,
+                    matchedProductName,
+                    strategy: 'PRODUCT_NAME_MATCH',
+                };
+                if (debug) {
+                    result.allProducts = allProducts || [];
+                }
+                return result;
+            }
+            // 如果按 product_id 查不到条款，fall through 到向量检索
+            console.warn(`[混合检索] 产品名命中但无条款，降级到向量检索`);
+        }
+
+        // ========== 阶段 2：向量检索（仅在未命中产品名时执行） ==========
         const queryEmbedding = await embedText(query, { model: EMBEDDING_MODEL });
 
         const { data: matches, error: matchErr } = await supabase.rpc('match_clauses', {

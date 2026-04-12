@@ -355,6 +355,87 @@ npx tsx scripts/eval-retrieval.ts
 
 ---
 
+## 模式 8：全库召回再过滤 vs 精确范围直取
+
+### 问题本质
+
+当用户意图已明确指向某个产品时，如果仍走"全库向量 top-N → 再按 product_id 过滤"，
+会导致目标产品的部分 chunk 在全局排序中排不上去，被永久丢弃。
+
+### 常见触发场景
+
+- 用户选择了具体产品（下拉框 / 产品名查询）
+- 产品条款被切成多段 chunk 入库
+- 检索先做全库 `match_clauses(top N)`，再从结果中过滤目标产品
+- 概述类 chunk 排名高（因为包含产品名），但核心保障/免责 chunk 排不进 top-N
+
+### 典型信号（Debug 线索）
+
+- 结构化输出中部分字段 fallback 为"[条款未说明]"
+- debug 接口显示 strategy=PRODUCT_NAME_MATCH 但只返回 2-3 条 chunk
+- 提高 matchCount 到 30+ 才能召回完整 chunk
+- chunk 内容实际存在于数据库，但检索阶段被丢弃
+
+### 根因链
+
+```
+query=产品名 → 全库向量 top-N
+  → 概述 chunk（含产品名，相似度高）✅ 排进去
+  → 核心保障 chunk（不含产品名，相似度低）❌ 排不进去
+  → 按 product_id 过滤 → 只剩概述
+  → 结构化摘要缺失核心信息
+```
+
+### 通用解决思路
+
+**决策规则**：
+
+```
+用户意图是否已明确指向具体产品/文档？
+├── 是（产品名匹配成功）
+│   → Level 1 完全隔离：按 product_id 直接全量取 chunk
+│   → 跳过向量检索阶段
+│   → 按 id/order 排序保持段落顺序
+└── 否（开放查询）
+    → 走向量检索 + 优先级过滤
+```
+
+**实现模式（示意）**
+
+```typescript
+// 产品名命中 → 全量直取（不经过向量排序）
+if (priorityProductIds.length > 0) {
+    const clauses = await db
+        .from('clauses')
+        .select('id, product_id, content')
+        .in('product_id', priorityProductIds)
+        .order('id', { ascending: true });
+    
+    if (clauses.length > 0) return clauses; // 完整结果
+}
+// 未命中 → 向量检索兜底
+```
+
+### 配套措施：缓存键必须带版本号
+
+检索策略变更后，如果缓存键不含版本号，旧的残缺结果会被持续复用。
+
+```typescript
+const RETRIEVAL_VERSION = 'v2'; // 每次策略变更时递增
+function getCacheKey(name: string): string {
+    return `${RETRIEVAL_VERSION}:${normalize(name)}`;
+}
+```
+
+### 检查清单
+
+* [ ] 产品名命中后是否走全量直取（而非全库向量再过滤）
+* [ ] chunk 数量是否与入库时切分数一致
+* [ ] 缓存键是否包含检索版本号
+* [ ] 策略变更后旧缓存是否自动失效
+
+---
+
 ## 反模式：不应该使用 RAG 的场景（重要）
 
 * 规则可穷举（if / else 更可靠）
