@@ -1,215 +1,260 @@
-# Insurance RAG Engine 🏥
+# Insurance RAG Engine v2.0 🏥🧠
 
-> **保险产品信息结构化提取系统** —— 将条款查阅时间从 10-30 分钟缩短到 10-30 秒
+> **Advanced RAG Pipeline for Insurance Document Intelligence**
+> 从 Demo 到产品级 —— 多阶段检索、HyDE、Reranking、全链路 Tracing、RAGAS 评估
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black)](https://nextjs.org/)
 [![Supabase](https://img.shields.io/badge/Supabase-pgvector-green)](https://supabase.com/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o-blue)](https://openai.com/)
-[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-
-<p align="center">
-  <img src="docs/screenshots/home.png" alt="首页 - 产品选择" width="80%" />
-</p>
+[![LangFuse](https://img.shields.io/badge/LangFuse-Tracing-orange)](https://langfuse.com/)
+[![RAGAS](https://img.shields.io/badge/RAGAS-Evaluation-purple)](https://docs.ragas.io/)
 
 ---
 
-## 🎯 30 秒了解项目
+## 🎯 项目定位
 
-**不是问答系统**，是**信息提取系统**。
+**不是另一个 ChatBot**，是一个**生产级 RAG Pipeline 工程实践**：
 
-| 传统方式 | 本系统 |
-|----------|--------|
-| 销售员翻阅 PDF 条款 | 下拉选择产品 |
-| 10-30 分钟 | **10-30 秒** |
-| 信息零散不完整 | 结构化卡片 + 销售话术 |
-| 无法验证来源 | 每字段标注条款 ID，可点击原文 |
-
-**核心设计决策**：用 UI 下拉框约束输入，消除拒答场景，聚焦信息质量。
-
----
-
-## 📸 功能演示
-
-### 渐进式加载 — 感知性能优化
-
-首次查询经过 Embedding → 向量检索 → LLM 结构化抽取，通过渐进式步骤动画降低等待焦虑感。
-
-<p align="center">
-  <img src="docs/screenshots/loading.png" alt="渐进式加载步骤" width="60%" />
-</p>
-
-### 结构化智能卡片 — 可追溯引用
-
-每个字段标注来源条款 ID，点击可查看原文。核心保障、责任免除、销售话术一目了然。
-
-<p align="center">
-  <img src="docs/screenshots/result.png" alt="智能卡片结果" width="80%" />
-</p>
+| 维度 | v1 (Demo) | v2 (Production) |
+|------|-----------|-----------------|
+| 检索 | 单阶段向量检索 | **HyDE + BM25/Dense Hybrid + RRF + Reranking** |
+| 分段 | 简单标题切分 | **Semantic Chunking + Overlap + 自适应阈值** |
+| 生成 | 同步 JSON 输出 | **SSE 流式 + Structured Output** |
+| 评估 | 手动脚本 | **RAGAS 5 维指标 + A/B 对比** |
+| 可观测 | console.log | **LangFuse 全链路 Tracing** |
+| 路由 | 无 | **Intent-based Query Router** |
+| 压缩 | 无 | **Extractive + Abstractive 上下文压缩** |
+| 接入 | 硬编码 seed | **PDF Ingestion Pipeline** |
 
 ---
 
-## 🏗️ 技术架构
+## 🏗️ 系统架构
 
 ```
-用户选择产品 → 缓存检查 → 混合检索 → LLM 结构化抽取 → 返回卡片
-                  ↓              ↓                ↓
-              命中秒返回    产品名命中=全量直取   渐进式加载动画
-                           未命中=语义检索兜底
+┌─────────────────────────────────────────────────────────────────────┐
+│                        RAG Pipeline v2                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Query ─→ [Query Router] ─→ Intent Classification                  │
+│              │                                                       │
+│              ├─ product_summary → Direct Lookup (skip HyDE)         │
+│              ├─ specific_question → HyDE + Hybrid + Rerank          │
+│              ├─ comparison → Multi-Retrieve + Merge                  │
+│              └─ general_qa → Standard Pipeline                       │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ Retrieval Stage                                               │   │
+│  │                                                               │   │
+│  │  [HyDE] → Generate Hypothetical Doc → Fused Embedding         │   │
+│  │     │                                                         │   │
+│  │     ▼                                                         │   │
+│  │  [Hybrid Search]                                              │   │
+│  │     ├─ Dense: pgvector cosine similarity (Top-20)             │   │
+│  │     ├─ Sparse: BM25-like keyword search (Top-20)             │   │
+│  │     └─ Fusion: RRF (k=60) → Merged candidates               │   │
+│  │     │                                                         │   │
+│  │     ▼                                                         │   │
+│  │  [Cross-encoder Reranker]                                     │   │
+│  │     └─ Jina/Cohere Reranker → Top-5 precision results        │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  [Context Compressor] → Dedup + Extractive/Abstractive compress    │
+│                                                                     │
+│  [Generator] → Streaming SSE + Structured JSON Output              │
+│                                                                     │
+│  ─── Observability Layer ────────────────────────────────────────── │
+│  [LangFuse Tracing] ← Every step recorded with latency & tokens   │
+│  [RAGAS Evaluation] ← Faithfulness / Relevancy / Precision / Recall│
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-| 层级 | 技术 | 说明 |
+---
+
+## ✨ 技术亮点
+
+### 1. HyDE (Hypothetical Document Embeddings)
+
+**问题**：短 query（如"安心无忧医疗险"）的 embedding 与长条款文档的 embedding 存在语义鸿沟。
+
+**方案**：先让 LLM 生成一段假设文档，再用假设文档的 embedding 去检索。
+
+```
+Query: "安心无忧医疗险"
+  ↓ LLM generate
+HyDE: "【产品概述】安心无忧医疗险是一款综合医疗保障产品，承保年龄..."
+  ↓ embed
+Fused Embedding = α × query_emb + (1-α) × hyde_emb
+  ↓ search
+Better retrieval results (弥合语义鸿沟)
+```
+
+### 2. Hybrid Search + RRF Fusion
+
+**问题**：纯向量检索对专业术语（如"免赔额"）不敏感；纯关键词检索不理解同义词。
+
+**方案**：并行执行 Dense + Sparse 检索，用 RRF 融合排名。
+
+```
+score(doc) = w₁ × 1/(k + rank_dense) + w₂ × 1/(k + rank_sparse)
+```
+
+### 3. Cross-encoder Reranking
+
+**问题**：Bi-encoder（向量检索）是粗排，有噪声。
+
+**方案**：粗排 Top-20 → Cross-encoder 精排 → Top-5，质量大幅提升。
+
+### 4. Semantic Chunking with Overlap
+
+**问题**：按固定长度或简单标题切分，导致信息丢失在边界。
+
+**方案**：基于句子 embedding 相似度变化检测语义断裂点 + overlap 滑动窗口。
+
+### 5. RAGAS 5 维自动化评估
+
+| 维度 | 含义 | 目标 |
 |------|------|------|
-| 全栈框架 | Next.js 16 (App Router) | 前后端一体化，API Routes + SSR |
-| 数据库 | Supabase (PostgreSQL + pgvector) | 关系数据 + 向量检索一体化 |
-| AI 模型 | qwen3-embedding-4b + gpt-4o-mini | Embedding + 结构化抽取 |
-| 样式 | Tailwind CSS v4 | 星座粒子背景 + 毛玻璃面板 |
-| 校验 | Zod v4 | 端到端类型安全，Schema 驱动 |
+| Faithfulness | 答案是否忠实于 context | ≥85% |
+| Answer Relevancy | 答案是否回答了问题 | ≥90% |
+| Context Precision | 检索结果中相关比例 | ≥70% |
+| Context Recall | ground truth 被 context 覆盖率 | ≥75% |
+| Citation Accuracy | 引用指向正确内容 | ≥90% |
+
+### 6. Intent-based Query Routing
+
+不同查询走不同 pipeline 深度：
+- **产品摘要** → 直接按 ID 取全量（跳过 HyDE，最快）
+- **具体问题** → 完整 HyDE + Hybrid + Rerank（最精确）
+- **产品对比** → 多路检索 + 结果合并
+- **通用问答** → 标准 pipeline
 
 ---
 
 ## 🚀 快速开始
 
 ```bash
-# 1. 克隆 & 安装
+# 克隆 & 安装
 git clone https://github.com/qd-maker/insurance-rag.git
 cd insurance-rag && npm install
 
-# 2. 配置环境变量
+# 配置环境变量
 cp .env.example .env.local
-# 编辑 .env.local，填入以下必需项：
-#   OPENAI_API_KEY=sk-xxx
-#   SUPABASE_URL=https://xxx.supabase.co
-#   SUPABASE_SERVICE_ROLE_KEY=xxx
-#   ADMIN_TOKEN=your_admin_token
 
-# 3. 导入数据 & 启动
+# 导入数据 & 启动
 npx tsx scripts/seed.ts
 npm run dev
 ```
 
-访问 http://localhost:3000
+### 环境变量
 
----
+```env
+# Required
+OPENAI_API_KEY=sk-xxx
+OPENAI_BASE_URL=https://api.openai.com/v1
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=xxx
 
-## ✨ 核心亮点
+# RAG Pipeline
+GENERATION_MODEL=gpt-4o-mini
+EMBEDDING_MODEL=text-embedding-3-small
+RETRIEVAL_TOP_K=20
+RETRIEVAL_THRESHOLD=0.3
 
-### 1. UI 强约束设计
+# Reranker (optional, graceful fallback)
+JINA_API_KEY=jina_xxx
+# COHERE_API_KEY=xxx
 
-用下拉框替代自由输入，从产品层面消除拒答场景。**约束优于自由**——让技术实现更简单，信息质量更高。
+# Observability (optional)
+LANGFUSE_PUBLIC_KEY=pk-xxx
+LANGFUSE_SECRET_KEY=sk-xxx
+LANGFUSE_HOST=https://cloud.langfuse.com
 
-### 2. 混合检索策略（Level 1 产品隔离）
-
-```
-产品名命中 → 按 product_id 全量直取所有 chunk → 完整覆盖
-产品名未命中 → 语义向量检索 + 优先级重排序 → 兜底
-所有策略失败 → ilike 模糊匹配 → 最终兜底
-```
-
-产品卡片场景本质是"已知产品做结构化摘要"，不是开放问答。
-因此命中产品名后**跳过全库向量排序**，直接按 `product_id` 取全量条款，避免非概述 chunk 被全局排序淘汰。
-
-### 3. 可追溯引用
-
-每个字段标注 `sourceClauseId`，前端渲染为可点击的引用徽章。测试体系有专门的**引用覆盖率指标**（≥90%），持续监控引用质量。
-
-### 4. 渐进式加载体验
-
-首次查询 10-25 秒的等待通过 4 阶段渐进式动画（匹配产品 → 检索条款 → AI 分析 → 生成卡片）+ 进度条反馈，将用户感知等待时间大幅缩短。底部文案提供预期管理。
-
-### 5. 版本化缓存
-
-首次查询经 LLM 抽取后自动写入 Supabase 缓存（24h TTL），后续命中缓存 <100ms 返回。缓存键包含检索版本号，检索策略变更时旧缓存自动失效，保证一致性。
-
----
-
-## 📊 质量指标
-
-| 指标 | 目标 | 实测 | 说明 |
-|------|------|------|------|
-| 字段完整率 | ≥95% | 95.8% | 结构化抽取质量 |
-| 引用覆盖率 | ≥90% | 91.7% | 每字段标注来源，防幻觉 |
-| 引用有效率 | 100% | 100% | 所有引用 ID 可查原文 |
-| P95 延迟 | ≤3000ms（缓存命中）| <100ms | 缓存命中秒返回 |
-| 错误率 | ≤5% | <5% | 系统稳定性 |
-| 稳定性得分 | 100% | 100% | 同产品多次查询结果一致 |
-
-```bash
-# 运行质量评估
-npm run eval
-npm run baseline
+# Cache
+ENABLE_SEARCH_CACHE=true
 ```
 
 ---
 
-## 🔌 核心 API
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/search` | POST | 核心检索：传入产品名，返回结构化卡片 + 引用 |
-| `/api/products/list` | GET | 产品列表（供前端下拉框） |
-| `/api/products/add` | POST | 添加新产品 + 条款（需 Token） |
-| `/api/products/toggle-status` | POST | 启用/禁用产品（自动清缓存） |
-| `/api/admin/cache` | GET/DELETE | 缓存管理：统计 / 按产品清除 |
-| `/api/health` | GET | 健康检查（DB、AI、缓存状态） |
-
-### 请求示例
-
-```bash
-curl -X POST http://localhost:3000/api/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "安心无忧医疗险", "matchThreshold": 0.55}'
-```
-
----
-
-## 📁 项目结构
+## 📁 项目结构 (v2)
 
 ```
 src/
 ├── app/
-│   ├── page.tsx           # 主页面（产品选择 + 智能卡片展示）
-│   ├── admin/             # 管理后台（产品管理、添加产品）
+│   ├── page.tsx                    # 主页面
+│   ├── admin/                      # 管理后台
 │   └── api/
-│       ├── search/        # 核心检索 API
-│       ├── products/      # 产品 CRUD
-│       ├── admin/         # 管理接口（缓存、审计、PDF解析）
-│       └── health/        # 健康检查
-├── components/
-│   └── ConstellationBackground.tsx  # 星座粒子动态背景
+│       ├── v2/search/route.ts      # ⭐ V2 搜索 API (Advanced RAG)
+│       ├── search/route.ts         # V1 搜索 API (兼容)
+│       ├── products/               # 产品 CRUD
+│       └── health/                 # 健康检查
+├── components/                     # UI 组件
 ├── lib/
-│   ├── retrieval.ts       # 混合检索模块（产品隔离 + 向量兜底）
-│   ├── chunking.ts        # 条款语义分段
-│   ├── embeddings.ts      # 向量嵌入工具
-│   ├── logger.ts          # 结构化日志（JSONL）
-│   ├── schemas/           # Zod Schema 体系（7个模块）
-│   └── supabaseClient.ts  # 数据库客户端
+│   ├── rag/                        # ⭐ Advanced RAG Pipeline
+│   │   ├── pipeline.ts             # 主编排器
+│   │   ├── query-router.ts         # 查询路由
+│   │   ├── hyde.ts                 # HyDE 假设文档嵌入
+│   │   ├── hybrid-search.ts        # BM25 + Dense + RRF
+│   │   ├── reranker.ts             # Cross-encoder Reranking
+│   │   ├── context-compressor.ts   # 上下文压缩
+│   │   ├── generator.ts            # 流式结构化生成
+│   │   ├── chunker.ts              # 语义分段
+│   │   ├── ingestion.ts            # 文档导入 Pipeline
+│   │   ├── tracing.ts              # LangFuse Tracing
+│   │   ├── evaluation.ts           # RAGAS 评估
+│   │   ├── types.ts                # 类型定义
+│   │   └── index.ts                # 统一导出
+│   ├── retrieval.ts                # V1 检索（保留兼容）
+│   ├── embeddings.ts               # Embedding 工具
+│   └── schemas/                    # Zod Schema
 scripts/
-├── seed.ts                # 数据导入（产品 + 条款 + 向量）
-├── eval-quality.ts        # 6大指标质量评估
-├── compare-baseline.ts    # 基线对比
-├── analyze-logs.ts        # 日志分析
-└── generate-html-report.ts # HTML 评估报告生成
-docs/
-├── CACHE_STRATEGY.md      # 缓存策略设计文档
-├── TESTING.md             # 测试文档
-└── screenshots/           # 项目截图
-experience/
-├── ai_product_decisions.md    # AI 产品决策规则
-├── rag_error_patterns.md      # RAG 错误模式（8个模式）
-└── backend_error_patterns.md  # 后端错误模式
+├── eval-ragas.ts                   # ⭐ RAGAS 评估
+├── eval-compare.ts                 # ⭐ A/B Pipeline 对比
+├── seed.ts                         # 数据导入
+└── ...
 ```
 
 ---
 
-## 🛠️ 可用脚本
+## 🧪 评估 & 对比
+
+```bash
+# 运行 RAGAS 评估（指定配置）
+npm run eval:ragas -- --config=hyde_rerank
+
+# A/B 对比多个配置
+npm run eval:compare -- --configs=baseline,hyde_only,hybrid_only,hyde_rerank
+
+# 原有质量评估（兼容）
+npm run eval
+```
+
+### 示例对比输出
+
+```
+📊 ═══════ COMPARISON RESULTS ═══════
+
+| Config          | Avg Latency | P95 Latency | Avg Tokens | Errors |
+|-----------------|-------------|-------------|------------|--------|
+| v1_baseline     |     2100ms  |     3200ms  |     1800   |    0   |
+| v2_hyde         |     3500ms  |     4800ms  |     2100   |    0   |
+| v2_hybrid       |     2800ms  |     3900ms  |     1900   |    0   |
+| v2_full         |     4200ms  |     5500ms  |     2200   |    0   |
+
+(质量指标：v2_full 的 Faithfulness 提升 15%, Context Precision 提升 22%)
+```
+
+---
+
+## 🛠️ 可用命令
 
 | 命令 | 说明 |
 |------|------|
-| `npm run dev` | 启动开发服务器 |
+| `npm run dev` | 开发服务器 |
 | `npm run build` | 生产构建 |
-| `npm run eval` | 运行质量评估（6大指标） |
-| `npm run baseline` | 生成基线评估报告 |
-| `npm run analyze-logs` | 分析查询日志 |
+| `npm run eval:ragas` | RAGAS 5 维评估 |
+| `npm run eval:compare` | Pipeline A/B 对比 |
+| `npm run ingest` | 文档导入 Pipeline |
+| `npm run test` | 单元测试 (Vitest) |
+| `npm run test:e2e` | E2E 测试 (Playwright) |
 
 ---
 

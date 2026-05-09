@@ -23,7 +23,7 @@ export default function ParticleBackground() {
 
         let animationFrameId: number;
         let particles: Particle[] = [];
-        let mouse = { x: -1000, y: -1000 };
+        const mouse = { x: -1000, y: -1000 };
 
         // Colors extracted from the reference image (Google Blueish tones)
         const colors = ['#4285F4', '#34A853', '#EA4335', '#FBBC05', '#dadce0'];
