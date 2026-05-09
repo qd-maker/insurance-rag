@@ -23,7 +23,7 @@ export default function ConstellationBackground() {
 
         let animationFrameId: number;
         let particles: Particle[] = [];
-        let mouse = { x: -1000, y: -1000 };
+        const mouse = { x: -1000, y: -1000 };
 
         const PARTICLE_COUNT = 120;
         const CONNECTION_DISTANCE = 120;

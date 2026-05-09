@@ -1,16 +1,22 @@
 {
   "name": "insurance-rag",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
+    "dev:turbo": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "baseline": "npx tsx scripts/eval-quality.ts --baseline",
     "eval": "npx tsx scripts/eval-quality.ts",
+    "eval:ragas": "npx tsx scripts/eval-ragas.ts",
+    "eval:compare": "npx tsx scripts/eval-compare.ts",
+    "ingest": "npx tsx scripts/ingest-documents.ts",
     "analyze-logs": "npx tsx scripts/analyze-logs.ts",
-    "check-logs": "npx tsx scripts/check-log-size.ts"
+    "check-logs": "npx tsx scripts/check-log-size.ts",
+    "test": "vitest",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.86.0",
@@ -18,18 +24,24 @@
     "clsx": "^2.1.1",
     "csv-parse": "^6.1.0",
     "framer-motion": "^12.25.0",
+    "langfuse": "^3.0.0",
     "lucide-react": "^0.555.0",
     "next": "16.0.6",
     "openai": "^6.9.1",
+    "pdf-parse": "^1.1.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "react-markdown": "^10.1.0",
     "tailwind-merge": "^3.4.0",
     "three": "^0.182.0",
-    "zod": "^4.3.5"
+    "zod": "^4.3.5",
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.50.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pdf-parse": "^1.1.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
@@ -39,6 +51,7 @@
     "tailwindcss": "^4",
     "tailwindcss-animate": "^1.0.7",
     "tsx": "^4.21.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.0.0"
   }
 }

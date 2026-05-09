@@ -34,6 +34,28 @@ export interface EmbeddingResponse {
     };
 }
 
+const EMBEDDING_TIMEOUT_MS = Number(process.env.EMBEDDING_TIMEOUT_MS || '15000');
+const EMBEDDING_MAX_RETRIES = Number(process.env.EMBEDDING_MAX_RETRIES || '1');
+const EMBEDDING_STRICT_DIM = process.env.EMBEDDING_STRICT_DIM === 'true';
+
+function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRetryableError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message.toLowerCase();
+    if (msg.includes('timeout') || msg.includes('aborted')) return true;
+    if (msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('enotfound')) return true;
+    if (msg.includes('fetch failed') || msg.includes('network')) return true;
+    const statusMatch = msg.match(/\((\d{3})\)/);
+    if (statusMatch) {
+        const status = Number(statusMatch[1]);
+        return status === 408 || status === 429 || status >= 500;
+    }
+    return false;
+}
+
 /**
  * 为文本生成向量嵌入
  * @param text 输入文本
@@ -52,11 +74,33 @@ export async function embedText(
         throw new Error('缺少 OPENAI_API_KEY 环境变量');
     }
 
-    // 使用标准 OpenAI Embedding API 格式
-    const requestBody = {
-        model,
-        input: text
-    };
+    const requestBody = { model, input: text };
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= EMBEDDING_MAX_RETRIES; attempt++) {
+        try {
+            return await embedTextOnce(baseURL, apiKey, requestBody);
+        } catch (error) {
+            lastError = error;
+            if (attempt < EMBEDDING_MAX_RETRIES && isRetryableError(error)) {
+                const backoffMs = 800 * Math.pow(2, attempt);
+                console.warn(`[Embedding] 调用失败 (attempt ${attempt + 1}/${EMBEDDING_MAX_RETRIES + 1})，${backoffMs}ms 后重试: ${error instanceof Error ? error.message : error}`);
+                await sleep(backoffMs);
+                continue;
+            }
+            throw error;
+        }
+    }
+    throw lastError;
+}
+
+async function embedTextOnce(
+    baseURL: string,
+    apiKey: string,
+    requestBody: { model: string; input: string }
+): Promise<number[]> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), EMBEDDING_TIMEOUT_MS);
 
     try {
         const response = await fetch(`${baseURL}/embeddings`, {
@@ -66,12 +110,13 @@ export async function embedText(
                 'Authorization': `Bearer ${apiKey}`,
             },
             body: JSON.stringify(requestBody),
+            signal: controller.signal,
         });
 
         if (!response.ok) {
             const errorText = await response.text().catch(() => 'Unknown error');
             throw new Error(
-                `Embedding API 调用失败 (${response.status}): ${errorText}`
+                `Embedding API 调用失败 (${response.status}): ${errorText.slice(0, 500)}`
             );
         }
 
@@ -83,21 +128,28 @@ export async function embedText(
 
         const embedding = data.data[0].embedding;
 
-        // 维度检查（可选，用于调试）
         const expectedDim = Number(process.env.EMBEDDING_DIM || '3072');
         if (embedding.length !== expectedDim) {
-            console.warn(
-                `⚠️ Embedding 维度不匹配: 期望 ${expectedDim}, 实际 ${embedding.length}`
-            );
+            const msg = `Embedding 维度不匹配: 期望 ${expectedDim}, 实际 ${embedding.length}`;
+            if (EMBEDDING_STRICT_DIM) {
+                throw new Error(msg);
+            }
+            console.warn(`⚠️ ${msg}`);
         }
 
         return embedding;
-    } catch (error: any) {
-        // 增强错误信息
-        if (error.message?.includes('fetch')) {
-            throw new Error(`网络请求失败: ${error.message}`);
+    } catch (error: unknown) {
+        if (error instanceof Error) {
+            if (error.name === 'AbortError') {
+                throw new Error(`Embedding API 调用超时 (${EMBEDDING_TIMEOUT_MS}ms)`);
+            }
+            if (error.message.toLowerCase().includes('fetch')) {
+                throw new Error(`Embedding 网络请求失败: ${error.message}`);
+            }
         }
         throw error;
+    } finally {
+        clearTimeout(timeout);
     }
 }
 
@@ -111,8 +163,6 @@ export async function embedTexts(
     texts: string[],
     options: EmbeddingOptions = {}
 ): Promise<number[][]> {
-    // 简单实现：逐个调用
-    // TODO: 优化为单次批量请求（需确认 API 是否支持）
     const embeddings: number[][] = [];
     for (const text of texts) {
         const embedding = await embedText(text, options);
