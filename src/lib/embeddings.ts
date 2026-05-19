@@ -67,8 +67,8 @@ export async function embedText(
     options: EmbeddingOptions = {}
 ): Promise<number[]> {
     const apiKey = process.env.OPENAI_API_KEY;
-    const baseURL = process.env.OPENAI_BASE_URL || 'https://api.bltcy.ai/v1';
-    const model = options.model || process.env.EMBEDDING_MODEL || 'qwen3-embedding-4b';
+    const baseURL = process.env.OPENAI_BASE_URL || 'https://yunwu.ai/v1';
+    const model = options.model || process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 
     if (!apiKey) {
         throw new Error('缺少 OPENAI_API_KEY 环境变量');
