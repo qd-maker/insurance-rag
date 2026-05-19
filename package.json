@@ -13,6 +13,7 @@
     "eval:ragas": "npx tsx scripts/eval-ragas.ts",
     "eval:compare": "npx tsx scripts/eval-compare.ts",
     "ingest": "npx tsx scripts/ingest-documents.ts",
+    "regenerate:vectors": "npx tsx scripts/regenerate-vectors.ts",
     "analyze-logs": "npx tsx scripts/analyze-logs.ts",
     "check-logs": "npx tsx scripts/check-log-size.ts",
     "test": "vitest",

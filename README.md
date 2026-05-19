@@ -138,6 +138,8 @@ cd insurance-rag && npm install
 
 # 配置环境变量（参考下方"环境变量"清单）
 cp .env.example .env.local
+# 如需 Docker 本地启动，也可以复制为 .env.production
+# cp .env.example .env.production
 
 # 导入种子数据
 npx tsx scripts/seed.ts
@@ -155,7 +157,7 @@ curl http://localhost:3000/api/health
 ```env
 # === Required: OpenAI 兼容 ===
 OPENAI_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://api.openai.com/v1   # 也可走聚合代理
+OPENAI_BASE_URL=https://yunwu.ai/v1         # 也可替换为其他 OpenAI 兼容代理或官方地址
 
 # === Required: Supabase (pgvector) ===
 SUPABASE_URL=https://xxx.supabase.co
@@ -166,6 +168,10 @@ SUPABASE_SERVICE_ROLE_KEY=xxx
 GENERATION_MODEL=gpt-4o-mini
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIM=1536                          # 必须与 EMBEDDING_MODEL 真实维度一致
+
+# 前端公共变量（页面直连 Supabase 时需要）
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=xxx
 EMBEDDING_TIMEOUT_MS=15000                  # embedding 单次超时
 EMBEDDING_MAX_RETRIES=1                     # 指数退避重试次数
 EMBEDDING_STRICT_DIM=false                  # true 表示维度不符直接抛错

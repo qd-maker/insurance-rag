@@ -57,10 +57,10 @@ cd insurance-rag
 cat > .env.production << 'EOF'
 # OpenAI API 配置
 OPENAI_API_KEY=你的API密钥
-OPENAI_BASE_URL=https://api.bltcy.ai/v1
+OPENAI_BASE_URL=https://yunwu.ai/v1
 
 # 模型配置
-EMBEDDING_MODEL=text-embedding-ada-002
+EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIM=1536
 GENERATION_MODEL=gpt-4o-mini
 
