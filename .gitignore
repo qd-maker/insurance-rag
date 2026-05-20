@@ -58,9 +58,14 @@ next-env.d.ts
 __pycache__/
 *.pdf
 
-# Dev server runtime logs
+# Runtime logs (dev server + query logs)
 logs/dev-server.*.log
+logs/query_*.jsonl
+
+# Evaluation outputs
+outputs/
 
 # Internal working notes (local-only, not for the public repo)
 progress.txt
+interview-prep.md
 .env.local.bak-*
