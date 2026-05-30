@@ -40,9 +40,42 @@ type AuditLog = {
     operator: string;
     created_at: string;
     notes: string | null;
-    before_snapshot: any;
-    after_snapshot: any;
+    before_snapshot: unknown;
+    after_snapshot: unknown;
 };
+
+function getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+function getAuditMeta(action: string): {
+    label: string;
+    tone: string;
+    icon: React.ReactNode;
+} {
+    const normalized = action.toUpperCase();
+
+    if (normalized === 'CREATE_DRAFT') {
+        return { label: '创建草稿', tone: 'bg-amber-100 text-amber-700', icon: <CheckCircle2 className="w-4 h-4" /> };
+    }
+    if (normalized === 'SUBMIT_REVISION') {
+        return { label: '提交修订', tone: 'bg-blue-100 text-blue-600', icon: <RefreshCw className="w-4 h-4" /> };
+    }
+    if (normalized === 'PUBLISH' || normalized === 'ENABLE') {
+        return { label: '发布', tone: 'bg-green-100 text-green-600', icon: <Power className="w-4 h-4" /> };
+    }
+    if (normalized === 'UNPUBLISH' || normalized === 'DISABLE') {
+        return { label: '下架', tone: 'bg-red-100 text-red-600', icon: <PowerOff className="w-4 h-4" /> };
+    }
+    if (normalized === 'CREATE') {
+        return { label: '创建', tone: 'bg-green-100 text-green-600', icon: <CheckCircle2 className="w-4 h-4" /> };
+    }
+    if (normalized === 'UPDATE') {
+        return { label: '更新', tone: 'bg-blue-100 text-blue-600', icon: <RefreshCw className="w-4 h-4" /> };
+    }
+
+    return { label: action, tone: 'bg-slate-100 text-slate-600', icon: <History className="w-4 h-4" /> };
+}
 
 export default function ProductsManagementPage() {
     const [token, setToken] = useState('');
@@ -112,7 +145,7 @@ export default function ProductsManagementPage() {
             sessionStorage.setItem('admin_token', trimmed);
             setToken(trimmed);
             setIsAuthenticated(true);
-        } catch (err: any) {
+        } catch {
             setLoginError('网络请求失败，请重试');
         } finally {
             setLoginLoading(false);
@@ -131,8 +164,8 @@ export default function ProductsManagementPage() {
             } else {
                 throw new Error('返回数据格式错误');
             }
-        } catch (err: any) {
-            setError(err.message || '加载失败');
+        } catch (err: unknown) {
+            setError(getErrorMessage(err) || '加载失败');
         } finally {
             setLoading(false);
         }
@@ -169,6 +202,15 @@ export default function ProductsManagementPage() {
             setIsAuthenticated(false);
             return;
         }
+        const actionLabel = currentActive ? '下架' : '发布';
+        const confirmMessage = currentActive
+            ? '确认下架该产品吗？下架后前台用户将不再看到它。'
+            : '确认发布该产品吗？发布后前台用户可以检索并咨询它。';
+
+        if (!window.confirm(confirmMessage)) {
+            return;
+        }
+
         setTogglingId(productId);
         try {
             const res = await fetch('/api/products/toggle-status', {
@@ -177,7 +219,11 @@ export default function ProductsManagementPage() {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${authToken}`,
                 },
-                body: JSON.stringify({ productId, active: !currentActive }),
+                body: JSON.stringify({
+                    productId,
+                    active: !currentActive,
+                    notes: `管理员${actionLabel}产品`,
+                }),
             });
             const data = await res.json().catch(() => null);
             if (!res.ok) {
@@ -196,7 +242,7 @@ export default function ProductsManagementPage() {
             } else {
                 alert(data?.message || data?.error || '操作失败');
             }
-        } catch (err) {
+        } catch {
             alert('操作失败，请重试');
         } finally {
             setTogglingId(null);
@@ -344,7 +390,7 @@ export default function ProductsManagementPage() {
                         </Link>
                         <span className="text-slate-300">|</span>
                         <Link href="/admin/add-product" className="text-sm font-medium text-blue-600 hover:text-blue-700">
-                            + 添加产品
+                            + 提交产品草稿
                         </Link>
                     </div>
                     <div className="text-xl font-bold flex items-center gap-2 text-slate-800">
@@ -385,11 +431,11 @@ export default function ProductsManagementPage() {
                     </div>
                     <div className="bg-white p-4 rounded-xl border border-slate-100">
                         <div className="text-2xl font-bold text-green-600">{products.filter(p => p.is_active).length}</div>
-                        <div className="text-sm text-slate-500">已启用</div>
+                        <div className="text-sm text-slate-500">已发布</div>
                     </div>
                     <div className="bg-white p-4 rounded-xl border border-slate-100">
-                        <div className="text-2xl font-bold text-red-600">{products.filter(p => !p.is_active).length}</div>
-                        <div className="text-sm text-slate-500">已禁用</div>
+                        <div className="text-2xl font-bold text-amber-600">{products.filter(p => !p.is_active).length}</div>
+                        <div className="text-sm text-slate-500">草稿/待发布</div>
                     </div>
                 </div>
 
@@ -418,7 +464,7 @@ export default function ProductsManagementPage() {
                                 {/* 产品行 */}
                                 <div className="p-4 flex items-center gap-4">
                                     {/* 状态指示 */}
-                                    <div className={`w-3 h-3 rounded-full shrink-0 ${product.is_active ? 'bg-green-500' : 'bg-red-500'}`} />
+                                    <div className={`w-3 h-3 rounded-full shrink-0 ${product.is_active ? 'bg-green-500' : 'bg-amber-500'}`} />
 
                                     {/* 产品信息 */}
                                     <div className="flex-1 min-w-0">
@@ -426,9 +472,9 @@ export default function ProductsManagementPage() {
                                             <h3 className="font-bold text-slate-900 truncate">{product.name}</h3>
                                             <span className={`text-xs px-2 py-0.5 rounded-full ${product.is_active
                                                 ? 'bg-green-100 text-green-700'
-                                                : 'bg-red-100 text-red-700'
+                                                : 'bg-amber-100 text-amber-700'
                                                 }`}>
-                                                {product.is_active ? '启用' : '禁用'}
+                                                {product.is_active ? '已发布' : '草稿'}
                                             </span>
                                         </div>
                                         {product.description && (
@@ -463,7 +509,7 @@ export default function ProductsManagementPage() {
                                             ) : (
                                                 <Power className="w-4 h-4" />
                                             )}
-                                            {product.is_active ? '禁用' : '启用'}
+                                            {product.is_active ? '下架' : '发布'}
                                         </button>
                                         <button
                                             onClick={() => toggleExpand(product.id)}
@@ -545,39 +591,35 @@ export default function ProductsManagementPage() {
                                             </div>
                                         ) : (
                                             <div className="space-y-2">
-                                                {auditLogs.map(log => (
-                                                    <div key={log.id} className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
-                                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${log.action === 'CREATE' ? 'bg-green-100 text-green-600' :
-                                                            log.action === 'UPDATE' ? 'bg-blue-100 text-blue-600' :
-                                                                log.action === 'DISABLE' ? 'bg-red-100 text-red-600' :
-                                                                    log.action === 'ENABLE' ? 'bg-green-100 text-green-600' :
-                                                                        'bg-slate-100 text-slate-600'
-                                                            }`}>
-                                                            {log.action === 'CREATE' && <CheckCircle2 className="w-4 h-4" />}
-                                                            {log.action === 'UPDATE' && <RefreshCw className="w-4 h-4" />}
-                                                            {log.action === 'DISABLE' && <PowerOff className="w-4 h-4" />}
-                                                            {log.action === 'ENABLE' && <Power className="w-4 h-4" />}
-                                                        </div>
-                                                        <div className="flex-1 min-w-0">
-                                                            <div className="flex items-center gap-2 text-sm">
-                                                                <span className="font-medium text-slate-900">{log.action}</span>
-                                                                <span className="text-slate-400">•</span>
-                                                                <span className="text-slate-500 flex items-center gap-1">
-                                                                    <User className="w-3 h-3" />
-                                                                    {log.operator}
-                                                                </span>
-                                                                <span className="text-slate-400">•</span>
-                                                                <span className="text-slate-500 flex items-center gap-1">
-                                                                    <Clock className="w-3 h-3" />
-                                                                    {new Date(log.created_at).toLocaleString('zh-CN')}
-                                                                </span>
+                                                {auditLogs.map(log => {
+                                                    const meta = getAuditMeta(log.action);
+
+                                                    return (
+                                                        <div key={log.id} className="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-100">
+                                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${meta.tone}`}>
+                                                                {meta.icon}
                                                             </div>
-                                                            {log.notes && (
-                                                                <p className="text-xs text-slate-500 mt-1">{log.notes}</p>
-                                                            )}
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="flex items-center gap-2 text-sm">
+                                                                    <span className="font-medium text-slate-900">{meta.label}</span>
+                                                                    <span className="text-slate-400">•</span>
+                                                                    <span className="text-slate-500 flex items-center gap-1">
+                                                                        <User className="w-3 h-3" />
+                                                                        {log.operator}
+                                                                    </span>
+                                                                    <span className="text-slate-400">•</span>
+                                                                    <span className="text-slate-500 flex items-center gap-1">
+                                                                        <Clock className="w-3 h-3" />
+                                                                        {new Date(log.created_at).toLocaleString('zh-CN')}
+                                                                    </span>
+                                                                </div>
+                                                                {log.notes && (
+                                                                    <p className="text-xs text-slate-500 mt-1">{log.notes}</p>
+                                                                )}
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                ))}
+                                                    );
+                                                })}
                                             </div>
                                         )}
                                     </div>

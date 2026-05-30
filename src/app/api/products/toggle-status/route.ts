@@ -7,6 +7,10 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
+function getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
 export async function POST(req: Request) {
     // ============ 1. 验证 Token ============
     const authHeader = req.headers.get('Authorization');
@@ -48,6 +52,21 @@ export async function POST(req: Request) {
 
         const beforeActive = product.is_active;
 
+        if (active) {
+            const { count, error: clauseCountErr } = await supabase
+                .from('clauses')
+                .select('id', { count: 'exact', head: true })
+                .eq('product_id', productId);
+
+            if (clauseCountErr) {
+                throw new Error(`校验条款失败: ${clauseCountErr.message}`);
+            }
+
+            if (!count) {
+                return NextResponse.json({ error: '发布失败：该产品还没有可检索条款' }, { status: 400 });
+            }
+        }
+
         // 更新状态
         const { error: updateErr } = await supabase
             .from('products')
@@ -82,8 +101,8 @@ export async function POST(req: Request) {
             if (cacheCleared > 0) {
                 console.log(`[Cache] 产品 "${product.name}" 状态变更，已清除 ${cacheCleared} 条缓存`);
             }
-        } catch (cacheErr: any) {
-            console.warn('[Cache] 清除缓存失败:', cacheErr.message);
+        } catch (cacheErr: unknown) {
+            console.warn('[Cache] 清除缓存失败:', getErrorMessage(cacheErr));
         }
 
         // 写入审计日志
@@ -93,7 +112,7 @@ export async function POST(req: Request) {
         try {
             await supabase.from('product_audit_log').insert({
                 product_id: productId,
-                action: active ? 'ENABLE' : 'DISABLE',
+                action: active ? 'PUBLISH' : 'UNPUBLISH',
                 operator: operatorName,
                 operator_ip: operatorIp,
                 before_snapshot: { is_active: beforeActive },
@@ -101,13 +120,15 @@ export async function POST(req: Request) {
                 notes: notes || null,
                 cache_cleared: cacheCleared,
             });
-        } catch (auditErr: any) {
-            console.warn('[Audit] 写入审计日志失败:', auditErr.message);
+        } catch (auditErr: unknown) {
+            console.warn('[Audit] 写入审计日志失败:', getErrorMessage(auditErr));
         }
 
         return NextResponse.json({
             success: true,
-            message: `产品 "${product.name}" 已${active ? '启用' : '禁用'}`,
+            message: active
+                ? `产品 "${product.name}" 已发布，前台用户现在可以检索和咨询该产品。`
+                : `产品 "${product.name}" 已下架，前台用户将不再看到该产品。`,
             product: {
                 id: productId,
                 name: product.name,
@@ -115,10 +136,10 @@ export async function POST(req: Request) {
             },
         });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         return NextResponse.json({
             success: false,
-            message: error.message || '操作失败',
+            message: getErrorMessage(error) || '操作失败',
         }, { status: 500 });
     }
 }

@@ -10,13 +10,11 @@ import {
     Loader2,
     Lock,
     ArrowLeft,
-    AlertTriangle,
     Database,
     Cpu,
     Sparkles,
-    FileCode2,
     Upload,
-    File as FileIcon
+    Clock3
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -33,16 +31,19 @@ type ApiResponse = {
     results?: {
         productId?: number;
         clauseId?: number;
+        isActive?: boolean;
+        status?: 'draft';
         error?: string;
     };
 };
 
 const stepIcons: Record<string, React.ReactNode> = {
-    '保存到 seedData.ts': <FileCode2 className="w-5 h-5" />,
+    '校验产品内容': <FileText className="w-5 h-5" />,
     'AI 抽取产品描述': <Sparkles className="w-5 h-5" />,
-    '写入产品数据库': <Database className="w-5 h-5" />,
-    '生成向量嵌入': <Cpu className="w-5 h-5" />,
+    '保存产品草稿': <Database className="w-5 h-5" />,
+    '语义分段 + 生成向量': <Cpu className="w-5 h-5" />,
     '写入条款和向量': <Database className="w-5 h-5" />,
+    '等待审核发布': <Clock3 className="w-5 h-5" />,
 };
 
 export default function AddProductPage() {
@@ -195,24 +196,31 @@ export default function AddProductPage() {
 
         if (!name.trim()) {
             setStatus('error');
-            setMessage('请输入产品名称');
+            setMessage('请输入产品名称，至少 2 个字符');
             return;
         }
 
-        if (!content.trim()) {
+        if (name.trim().length < 2) {
             setStatus('error');
-            setMessage('请输入产品内容');
+            setMessage('产品名称至少需要 2 个字符');
+            return;
+        }
+
+        if (content.trim().length < 50) {
+            setStatus('error');
+            setMessage('产品内容至少需要 50 个字符，建议上传完整条款或粘贴核心条款');
             return;
         }
 
         setStatus('loading');
         setMessage('');
         setSteps([
-            { step: '保存到 seedData.ts', status: 'pending' },
+            { step: '校验产品内容', status: 'pending' },
             { step: 'AI 抽取产品描述', status: 'pending' },
-            { step: '写入产品数据库', status: 'pending' },
-            { step: '生成向量嵌入', status: 'pending' },
+            { step: '保存产品草稿', status: 'pending' },
+            { step: '语义分段 + 生成向量', status: 'pending' },
             { step: '写入条款和向量', status: 'pending' },
+            { step: '等待审核发布', status: 'pending' },
         ]);
         setResults(undefined);
 
@@ -220,7 +228,7 @@ export default function AddProductPage() {
         const progressInterval = setInterval(() => {
             setSteps(prev => {
                 const pendingIndex = prev.findIndex(s => s.status === 'pending');
-                if (pendingIndex === -1 || pendingIndex >= 3) {
+                if (pendingIndex === -1) {
                     clearInterval(progressInterval);
                     return prev;
                 }
@@ -253,14 +261,14 @@ export default function AddProductPage() {
 
             if (res.ok && data.success) {
                 setStatus('success');
-                setMessage(data.message || '产品添加成功！');
+                setMessage(data.message || '产品已保存为草稿！');
                 setName('');
                 setContent('');
             } else {
                 setStatus('error');
                 setMessage(data.message || '添加失败');
             }
-        } catch (err) {
+        } catch {
             clearInterval(progressInterval);
             setStatus('error');
             setMessage('网络错误，请稍后重试');
@@ -285,7 +293,7 @@ export default function AddProductPage() {
                         <div className="inline-flex p-3 rounded-xl bg-blue-50 mb-4">
                             <Lock className="w-8 h-8 text-blue-600" />
                         </div>
-                        <h1 className="text-xl font-bold text-slate-900">添加新险种</h1>
+                        <h1 className="text-xl font-bold text-slate-900">提交产品草稿</h1>
                         <p className="text-slate-500 text-sm mt-1">请输入管理员 Token</p>
                     </div>
                     <input
@@ -343,10 +351,10 @@ export default function AddProductPage() {
                         <Shield className="w-10 h-10 text-blue-600" />
                     </div>
                     <h1 className="text-3xl font-bold text-slate-900 mb-2">
-                        添加新险种
+                        提交产品草稿
                     </h1>
                     <p className="text-slate-500">
-                        填写产品信息后，系统将自动生成向量并入库
+                        上传条款或粘贴文本后，系统生成向量并保存为草稿，审核发布后前台可见
                     </p>
                 </div>
 
@@ -362,7 +370,7 @@ export default function AddProductPage() {
                             type="text"
                             value={name}
                             onChange={(e) => setName(e.target.value)}
-                            placeholder="例如：平安福终身寿险"
+                            placeholder="例如：臻享一生重大疾病保险"
                             disabled={status === 'loading'}
                             className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all text-slate-900 placeholder:text-slate-400 disabled:bg-slate-100"
                         />
@@ -458,7 +466,7 @@ export default function AddProductPage() {
                         ) : (
                             <>
                                 <Send className="w-5 h-5" />
-                                提交并生成向量
+                                提交草稿并生成向量
                             </>
                         )}
                     </button>
@@ -515,9 +523,9 @@ export default function AddProductPage() {
                                     <div className="flex items-center gap-3 text-green-800">
                                         <CheckCircle2 className="w-6 h-6 text-green-600" />
                                         <div>
-                                            <div className="font-bold">添加成功！</div>
+                                            <div className="font-bold">草稿已保存</div>
                                             <div className="text-sm text-green-700 mt-1">
-                                                产品 ID: {results.productId} | 条款 ID: {results.clauseId}
+                                                产品 ID: {results.productId} | 首条条款 ID: {results.clauseId} | 状态: 待发布
                                             </div>
                                         </div>
                                     </div>
@@ -552,10 +560,10 @@ export default function AddProductPage() {
                 {status === 'success' && (
                     <div className="mt-6 text-center">
                         <Link
-                            href="/"
+                            href="/admin/products"
                             className="inline-flex items-center gap-2 bg-slate-900 text-white px-6 py-3 rounded-full font-medium hover:bg-slate-800 transition-all"
                         >
-                            返回主页验证新产品
+                            去产品管理发布
                             <ArrowLeft className="w-4 h-4 rotate-180" />
                         </Link>
                     </div>

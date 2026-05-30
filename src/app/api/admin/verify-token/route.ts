@@ -93,6 +93,10 @@ function clearFailures(ip: string): void {
     rateLimitStore.delete(ip);
 }
 
+function getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
 export async function POST(req: Request) {
     const clientIP = getClientIP(req);
 
@@ -131,16 +135,7 @@ export async function POST(req: Request) {
         // 验证成功，清除失败记录
         clearFailures(clientIP);
         return NextResponse.json({ valid: true });
-    } catch (e: any) {
-        return NextResponse.json({ valid: false, error: e?.message || '验证失败' }, { status: 500 });
+    } catch (e: unknown) {
+        return NextResponse.json({ valid: false, error: getErrorMessage(e) || '验证失败' }, { status: 500 });
     }
-}
-
-// 导出用于测试的辅助函数
-export function getRateLimitStatus(ip: string): RateLimitEntry | undefined {
-    return rateLimitStore.get(ip);
-}
-
-export function clearRateLimitStore(): void {
-    rateLimitStore.clear();
 }

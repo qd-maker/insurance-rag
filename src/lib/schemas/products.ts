@@ -10,8 +10,8 @@ export const ClauseInputSchema = z.object({
 // ============ 产品添加请求 Schema ============
 
 export const ProductAddRequestSchema = z.object({
-  name: z.string().min(1, '产品名称不能为空').max(200, '产品名称不能超过200字'),
-  content: z.string().min(1, '产品内容不能为空'),
+  name: z.string().trim().min(2, '产品名称至少需要2个字符').max(100, '产品名称不能超过100字'),
+  content: z.string().trim().min(50, '产品内容至少需要50个字符').max(300000, '产品内容不能超过30万字'),
   clauses: z.array(ClauseInputSchema).min(1, '至少需要一个条款').optional(),
 });
 
@@ -60,6 +60,8 @@ export const ProductAddSuccessResponseSchema = z.object({
   results: z.object({
     productId: z.number(),
     clauseId: z.number(),
+    isActive: z.literal(false),
+    status: z.literal('draft'),
   }),
 });
 

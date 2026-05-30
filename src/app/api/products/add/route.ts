@@ -1,6 +1,4 @@
 import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
 import { embedText } from '@/lib/embeddings';
@@ -16,13 +14,24 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
 const GENERATION_MODEL = process.env.GENERATION_MODEL || 'gpt-4o-mini';
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 
-// 统一名称归一化
-function normalize(s: string) {
-    return s
-        .toLowerCase()
-        .normalize('NFKC')
-        .replace(/[\s\u3000]/g, '')
-        .replace(/[()（）［］【】\[\]·•．・。、，,._/:\'\'\"\""-]+/g, '');
+type StepStatus = 'pending' | 'running' | 'done' | 'error';
+
+type ProductAddStep = {
+    step: string;
+    status: StepStatus;
+    detail?: string;
+};
+
+type ProductAddResults = {
+    productId?: number;
+    clauseId?: number;
+    isActive?: boolean;
+    status?: 'draft';
+    error?: string;
+};
+
+function getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
 }
 
 // 利用 LLM 从原始内容抽取 description
@@ -41,7 +50,7 @@ ${content}
         const chat = await openai.chat.completions.create({
             model: GENERATION_MODEL,
             temperature: 0.2,
-            response_format: { type: 'json_object' } as any,
+            response_format: { type: 'json_object' },
             messages: [
                 { role: 'system', content: sys },
                 { role: 'user', content: user },
@@ -73,7 +82,9 @@ export async function POST(req: Request) {
     if (!parsed.success) {
         return parsed.response;
     }
-    const { name, content } = parsed.data;
+    const { name, content, clauses } = parsed.data;
+    const trimmedName = name.trim();
+    const trimmedContent = content.trim();
 
     // ============ 3. 环境检查 ============
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -87,103 +98,89 @@ export async function POST(req: Request) {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const openai = new OpenAI({ apiKey: OPENAI_API_KEY, baseURL: OPENAI_BASE_URL });
 
-    const steps: { step: string; status: 'pending' | 'running' | 'done' | 'error'; detail?: string }[] = [
-        { step: '保存到 seedData.ts', status: 'pending' },
+    const steps: ProductAddStep[] = [
+        { step: '校验产品内容', status: 'pending' },
         { step: 'AI 抽取产品描述', status: 'pending' },
-        { step: '写入产品数据库', status: 'pending' },
+        { step: '保存产品草稿', status: 'pending' },
         { step: '语义分段 + 生成向量', status: 'pending' },
         { step: '写入条款和向量', status: 'pending' },
-        { step: '清除旧缓存', status: 'pending' },
+        { step: '等待审核发布', status: 'pending' },
     ];
 
-    const results: { productId?: number; clauseId?: number; error?: string } = {};
+    const results: ProductAddResults = {};
+    const operatorName = req.headers.get('X-Operator-Name') || 'admin';
+    const operatorIp = req.headers.get('X-Forwarded-For') || req.headers.get('X-Real-IP') || 'unknown';
 
     try {
-        // ============ Step 1: 保存到 seedData.ts ============
+        // ============ Step 1: 校验产品内容 ============
         steps[0].status = 'running';
-
-        const seedDataPath = path.join(process.cwd(), 'scripts', 'seedData.ts');
-        let fileContent: string;
-
-        try {
-            fileContent = fs.readFileSync(seedDataPath, 'utf-8');
-        } catch {
-            throw new Error('无法读取 seedData 文件');
-        }
-
-        const escapedName = name.trim().replace(/'/g, "\\'").replace(/\\/g, '\\\\');
-        const escapedContent = content.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-
-        const newProductEntry = `
-  // 🆕 通过网页添加 - ${new Date().toLocaleString('zh-CN')}
-  {
-    name: '${escapedName}',
-    content:
-      '${escapedContent}',
-  },`;
-
-        const insertPattern = /(\];\s*)$/;
-        if (!insertPattern.test(fileContent)) {
-            throw new Error('seedData.ts 格式异常');
-        }
-
-        const updatedContent = fileContent.replace(insertPattern, `${newProductEntry}\n$1`);
-        fs.writeFileSync(seedDataPath, updatedContent, 'utf-8');
-
         steps[0].status = 'done';
+        steps[0].detail = `已接收 ${trimmedContent.length} 字条款文本`;
 
         // ============ Step 2: AI 抽取描述 ============
         steps[1].status = 'running';
 
-        const description = await extractDescription(openai, name.trim(), content.trim());
+        const description = await extractDescription(openai, trimmedName, trimmedContent);
         steps[1].status = 'done';
         steps[1].detail = description ? `"${description.slice(0, 50)}..."` : '（使用默认描述）';
 
-        // ============ Step 3: 写入产品数据库 ============
+        // ============ Step 3: 保存产品草稿 ============
         steps[2].status = 'running';
-
-        const normalizedName = normalize(name.trim());
 
         // 检查是否已存在
         const { data: existingProduct } = await supabase
             .from('products')
             .select('id')
-            .ilike('name', name.trim())
-            .single();
+            .ilike('name', trimmedName)
+            .maybeSingle();
 
         let productId: number;
+        const productPayload = {
+            description: description || trimmedContent.slice(0, 200),
+            is_active: false,
+            created_by: operatorName,
+        };
 
         if (existingProduct) {
-            // 更新现有产品
             const { error: updateError } = await supabase
                 .from('products')
-                .update({ description: description || content.trim().slice(0, 200) })
+                .update(productPayload)
                 .eq('id', existingProduct.id);
 
             if (updateError) throw new Error(`更新产品失败: ${updateError.message}`);
             productId = existingProduct.id;
-            steps[2].detail = `更新产品 ID: ${productId}`;
+            steps[2].detail = `已提交为草稿修订，产品 ID: ${productId}`;
         } else {
-            // 创建新产品
             const { data: newProduct, error: insertError } = await supabase
                 .from('products')
-                .insert({ name: name.trim(), description: description || content.trim().slice(0, 200) })
+                .insert({
+                    name: trimmedName,
+                    ...productPayload,
+                })
                 .select('id')
                 .single();
 
             if (insertError) throw new Error(`创建产品失败: ${insertError.message}`);
             productId = newProduct.id;
-            steps[2].detail = `新建产品 ID: ${productId}`;
+            steps[2].detail = `已新建草稿，产品 ID: ${productId}`;
         }
 
         results.productId = productId;
+        results.isActive = false;
+        results.status = 'draft';
         steps[2].status = 'done';
 
         // ============ Step 4: 语义分段 + 生成向量 ============
         steps[3].status = 'running';
 
-        // 按【标题】切分为多条独立条款
-        const sections = splitClausesBySection(content.trim(), name.trim());
+        const sections = clauses?.length
+            ? clauses.map((clause) => [clause.title, clause.content].filter(Boolean).join('\n').trim())
+            : splitClausesBySection(trimmedContent, trimmedName);
+
+        if (sections.length === 0) {
+            throw new Error('未能从产品内容中提取有效条款');
+        }
+
         const embeddings: number[][] = [];
         for (const section of sections) {
             const emb = await embedText(section, { model: EMBEDDING_MODEL });
@@ -215,71 +212,74 @@ export async function POST(req: Request) {
             .select('id');
 
         if (insertError) throw new Error(`写入条款失败: ${insertError.message}`);
+        if (!insertedClauses?.length) throw new Error('写入条款失败: 未返回已创建条款');
         results.clauseId = insertedClauses?.[0]?.id;
         steps[4].detail = `写入 ${insertedClauses?.length || 0} 条条款`;
         steps[4].status = 'done';
 
-        // ============ Step 6: 清除旧缓存 ============
+        // ============ Step 6: 清除旧缓存并等待发布 ============
         steps[5].status = 'running';
+        let cacheDetail = '缓存表不存在或无旧缓存';
         try {
-            const cacheKey = normalizeProductName(name.trim());
+            const cacheKey = normalizeProductName(trimmedName);
             await supabase
                 .from('search_cache')
                 .delete()
                 .eq('query_hash', cacheKey);
-            steps[5].status = 'done';
-            steps[5].detail = '已清除该产品缓存';
+            cacheDetail = '已清除该产品缓存';
         } catch {
-            steps[5].status = 'done';
-            steps[5].detail = '缓存表不存在或无旧缓存';
+            cacheDetail = '缓存表不存在或无旧缓存';
         }
 
-        // ============ Step 6: 写入审计日志 ============
-        const operatorName = req.headers.get('X-Operator-Name') || 'admin';
-        const operatorIp = req.headers.get('X-Forwarded-For') || req.headers.get('X-Real-IP') || 'unknown';
-
+        // ============ Step 7: 写入审计日志 ============
         try {
             await supabase.from('product_audit_log').insert({
                 product_id: productId,
-                action: existingProduct ? 'UPDATE' : 'CREATE',
+                action: existingProduct ? 'SUBMIT_REVISION' : 'CREATE_DRAFT',
                 operator: operatorName,
                 operator_ip: operatorIp,
                 before_snapshot: existingProduct ? { id: existingProduct.id } : null,
                 after_snapshot: {
                     productId,
                     clauseId: results.clauseId,
-                    name: name.trim(),
-                    contentLength: content.trim().length,
+                    name: trimmedName,
+                    contentLength: trimmedContent.length,
                     description: description || null,
+                    is_active: false,
+                    status: 'draft',
                 },
-                notes: `通过管理后台添加`,
+                notes: existingProduct ? '通过管理后台提交草稿修订' : '通过管理后台创建草稿',
             });
-        } catch (auditErr: any) {
-            console.warn('[Audit] 写入审计日志失败:', auditErr.message);
+        } catch (auditErr: unknown) {
+            console.warn('[Audit] 写入审计日志失败:', getErrorMessage(auditErr));
             // 审计失败不影响主流程
         }
+
+        steps[5].status = 'done';
+        steps[5].detail = `${cacheDetail}，发布后前台可检索`;
 
         // ============ 返回成功结果 ============
         return NextResponse.json({
             success: true,
-            message: `产品 "${name.trim()}" 已成功添加并生成向量！`,
+            message: `产品 "${trimmedName}" 已保存为草稿并生成向量，发布后前台可见。`,
             steps,
             results,
         });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
+        const message = getErrorMessage(error);
         // 标记当前失败的步骤
         const runningStep = steps.find(s => s.status === 'running');
         if (runningStep) {
             runningStep.status = 'error';
-            runningStep.detail = error.message;
+            runningStep.detail = message;
         }
 
-        results.error = error.message;
+        results.error = message;
 
         return NextResponse.json({
             success: false,
-            message: `添加失败: ${error.message}`,
+            message: `添加失败: ${message}`,
             steps,
             results,
         }, { status: 500 });

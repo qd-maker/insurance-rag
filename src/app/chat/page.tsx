@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Activity,
@@ -11,7 +12,10 @@ import {
   FileText,
   Loader2,
   MessageCircleQuestion,
+  RefreshCw,
+  Search,
   Send,
+  Settings,
   ShieldCheck,
   Sparkles,
   X,
@@ -78,7 +82,7 @@ interface ExplainResult {
   mode: "explain";
   productName: string;
   summary: string;
-  suitableFor: string;
+  suitableFor: string | { value?: string; sourceClauseIds?: number[] };
   coverages: Array<{ title?: string; value?: string; sourceClauseIds?: number[] }>;
   exclusions: Array<{ value?: string; sourceClauseIds?: number[] }>;
   warnings: Array<{ value?: string; sourceClauseIds?: number[] }>;
@@ -146,6 +150,7 @@ const taskConfig: Record<TaskMode, {
   icon: React.ReactNode;
   loading: string[];
   phases: PhaseSpec[];
+  timeoutMs: number;
 }> = {
   ask: {
     title: "深入提问",
@@ -160,6 +165,7 @@ const taskConfig: Record<TaskMode, {
       { label: "组织答案", estimatedMs: 3500 },
       { label: "检查引用", estimatedMs: 900 },
     ],
+    timeoutMs: 60_000,
   },
   explain: {
     title: "解读产品",
@@ -174,6 +180,7 @@ const taskConfig: Record<TaskMode, {
       { label: "检索证据", estimatedMs: 2400 },
       { label: "生成解读", estimatedMs: 3500 },
     ],
+    timeoutMs: 75_000,
   },
   compare: {
     title: "对比产品",
@@ -188,6 +195,7 @@ const taskConfig: Record<TaskMode, {
       { label: "并行检索证据", estimatedMs: 3000 },
       { label: "生成对比建议", estimatedMs: 4200 },
     ],
+    timeoutMs: 120_000,
   },
   audit: {
     title: "审计风险",
@@ -202,10 +210,86 @@ const taskConfig: Record<TaskMode, {
       { label: "检索原文证据", estimatedMs: 2400 },
       { label: "生成风险报告", estimatedMs: 3500 },
     ],
+    timeoutMs: 75_000,
   },
 };
 
-const REQUEST_TIMEOUT_MS = 60_000;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readResponsePayload(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text.trim()) return {};
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { message: text.slice(0, 240) };
+  }
+}
+
+function formatApiError(payload: unknown, status: number) {
+  if (!isRecord(payload)) return `请求失败 (${status})`;
+
+  const details = payload.details;
+  if (Array.isArray(details) && details.length > 0) {
+    const messages = details
+      .map((item) => isRecord(item) && typeof item.message === "string" ? item.message : null)
+      .filter(Boolean);
+    if (messages.length > 0) return messages.join("；");
+  }
+
+  const error = typeof payload.error === "string" ? payload.error : "";
+  const message = typeof payload.message === "string" ? payload.message : "";
+  if (error && error !== "INVALID_REQUEST") return error;
+  if (message) return message;
+  return `请求失败 (${status})`;
+}
+
+function normalizeProductList(payload: unknown): ProductInfo[] {
+  if (!Array.isArray(payload)) return [];
+
+  return payload.reduce<ProductInfo[]>((items, item, index) => {
+    if (!isRecord(item) || typeof item.name !== "string") return items;
+
+    const name = item.name.trim();
+    if (!name) return items;
+
+    items.push({
+      id: typeof item.id === "number" ? item.id : index,
+      name,
+      description: typeof item.description === "string" ? item.description : null,
+      is_active: typeof item.is_active === "boolean" ? item.is_active : undefined,
+    });
+
+    return items;
+  }, []);
+}
+
+function normalizeAgentResult(payload: unknown): AgentResult {
+  if (!isRecord(payload) || typeof payload.mode !== "string") {
+    throw new Error("服务返回格式异常，请稍后重试。");
+  }
+
+  if (!["ask", "explain", "compare", "audit"].includes(payload.mode)) {
+    throw new Error("服务返回了未知任务类型。");
+  }
+
+  return payload as unknown as AgentResult;
+}
+
+function uniqueClauseIds(ids?: number[]) {
+  if (!Array.isArray(ids)) return [];
+  return Array.from(new Set(ids.filter((id) => Number.isFinite(id))));
+}
+
+function getRunValidationMessage(mode: TaskMode, productA: string, productB: string, question: string) {
+  if (!productA) return "请选择一个产品";
+  if (mode === "compare" && (!productB || productA === productB)) return "请选择两个不同产品";
+  if (mode === "ask" && question.trim().length < 2) return "请输入至少 2 个字的问题";
+  return null;
+}
 
 export default function ChatPage() {
   const [products, setProducts] = useState<ProductInfo[]>([]);
@@ -247,9 +331,13 @@ export default function ChatPage() {
   useEffect(() => {
     let mounted = true;
     fetch("/api/products/list")
-      .then((res) => res.json())
-      .then((data: ProductInfo[]) => {
-        if (!mounted || !Array.isArray(data)) return;
+      .then(async (res) => {
+        const payload = await readResponsePayload(res);
+        if (!res.ok) throw new Error(formatApiError(payload, res.status));
+        return normalizeProductList(payload);
+      })
+      .then((data) => {
+        if (!mounted) return;
         const cleanProducts = data.filter(isDemoReadyProduct);
         const active = cleanProducts.length > 0
           ? cleanProducts
@@ -258,7 +346,7 @@ export default function ChatPage() {
         setPrimaryProduct(active[0]?.name || "");
         setSecondaryProduct(active.find((item) => item.name !== active[0]?.name)?.name || "");
       })
-      .catch(() => setError("产品列表加载失败"))
+      .catch((err) => setError(err instanceof Error ? err.message : "产品列表加载失败"))
       .finally(() => {
         if (mounted) setProductsLoading(false);
       });
@@ -269,11 +357,8 @@ export default function ChatPage() {
   }, []);
 
   const selectedConfig = taskConfig[mode];
-  const canRun = mode === "compare"
-    ? Boolean(primaryProduct && secondaryProduct && primaryProduct !== secondaryProduct)
-    : mode === "ask"
-      ? Boolean(primaryProduct && question.trim().length >= 2)
-      : Boolean(primaryProduct);
+  const validationMessage = getRunValidationMessage(mode, primaryProduct, secondaryProduct, question);
+  const canRun = !validationMessage;
 
   const allSources = result?.sources || [];
   const showRightPanel = showEvidence || activeSource;
@@ -284,6 +369,10 @@ export default function ChatPage() {
     if (mode === "ask") setResult(null);
   }
 
+  function cancelAgentTask() {
+    abortRef.current?.abort();
+  }
+
   async function runAgentTask(nextMode = mode) {
     setMode(nextMode);
     setError(null);
@@ -291,31 +380,22 @@ export default function ChatPage() {
     setShowEvidence(false);
     setTraceId(null);
 
-    if (!canRun && nextMode === mode) {
-      setError(nextMode === "compare" ? "请选择两个不同产品" : nextMode === "ask" ? "请输入要问的问题" : "请选择一个产品");
+    const validation = getRunValidationMessage(nextMode, primaryProduct, secondaryProduct, question);
+    if (validation) {
+      setError(validation);
       return;
     }
 
     const productA = primaryProduct;
     const productB = secondaryProduct;
-    const valid = nextMode === "compare"
-      ? Boolean(productA && productB && productA !== productB)
-      : nextMode === "ask"
-        ? Boolean(productA && question.trim().length >= 2)
-        : Boolean(productA);
-
-    if (!valid) {
-      setError(nextMode === "compare" ? "请选择两个不同产品" : nextMode === "ask" ? "请输入要问的问题" : "请选择一个产品");
-      return;
-    }
-
-    // 取消任何在飞的旧请求，避免竛态
+    // 取消任何在飞的旧请求，避免竞态
     abortRef.current?.abort();
     clearLoadingTimers();
 
     const controller = new AbortController();
     abortRef.current = controller;
-    const timeoutHandle = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeoutMs = taskConfig[nextMode].timeoutMs;
+    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
     setLoading(true);
     setResult(null);
@@ -353,10 +433,11 @@ export default function ChatPage() {
       });
       const incomingTraceId = response.headers.get("X-Trace-Id") || response.headers.get("X-Request-Id");
       if (incomingTraceId) setTraceId(incomingTraceId);
-      const data = await response.json();
-      if (!response.ok || data.error) {
-        throw new Error(data.error || data.message || `请求失败 (${response.status})`);
+      const payload = await readResponsePayload(response);
+      if (!response.ok || (isRecord(payload) && typeof payload.error === "string")) {
+        throw new Error(formatApiError(payload, response.status));
       }
+      const data = normalizeAgentResult(payload);
       setResult(data as AgentResult);
       if (data.mode === "ask") {
         setAskHistory((previous) => [
@@ -369,8 +450,8 @@ export default function ChatPage() {
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         const elapsed = Date.now() - phaseStart;
-        setError(elapsed >= REQUEST_TIMEOUT_MS - 500
-          ? `请求超过 ${Math.round(REQUEST_TIMEOUT_MS / 1000)} 秒未返回，已取消。请稍后重试或简化问题。`
+        setError(elapsed >= timeoutMs - 500
+          ? `请求超过 ${Math.round(timeoutMs / 1000)} 秒未返回，已取消。请稍后重试或简化问题。`
           : "请求已取消。");
       } else {
         setError(err instanceof Error ? err.message : "请求失败，请稍后重试");
@@ -384,14 +465,17 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,#dbeafe,transparent_32%),linear-gradient(135deg,#f8fafc_0%,#eef2ff_50%,#f8fafc_100%)] text-slate-950">
-      <div className="mx-auto flex min-h-screen max-w-[1480px] gap-3 p-3">
+    <div className="min-h-dvh bg-[radial-gradient(circle_at_top_left,#dbeafe,transparent_32%),linear-gradient(135deg,#f8fafc_0%,#eef2ff_50%,#f8fafc_100%)] text-slate-950">
+      <a href="#analysis-workspace" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[60] focus:rounded-lg focus:bg-slate-950 focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-white">
+        跳到分析区
+      </a>
+      <div className="mx-auto flex min-h-dvh max-w-[1480px] gap-3 p-2 sm:p-3">
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-xl shadow-slate-200/60 backdrop-blur">
           <TopBar productsCount={products.length} productsLoading={productsLoading} result={result} />
 
-          <div className="flex-1 overflow-y-auto bg-slate-50/70">
-            <div className="mx-auto max-w-6xl space-y-4 px-5 py-5">
-              <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div id="analysis-workspace" className="flex-1 overflow-y-auto bg-slate-50/70">
+            <div className="mx-auto max-w-6xl space-y-4 px-3 py-4 sm:px-5 sm:py-5">
+              <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                   <div>
                     <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
@@ -403,13 +487,14 @@ export default function ChatPage() {
                       先把任务拆成检索问题，从知识库命中条款，再回答提问、生成解读、对比或风险审计。
                     </p>
                   </div>
-                  <div className="grid gap-2 sm:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     {(Object.keys(taskConfig) as TaskMode[]).map((task) => (
                       <TaskButton
                         key={task}
                         mode={task}
                         active={mode === task}
                         onClick={() => setMode(task)}
+                        disabled={loading}
                       />
                     ))}
                   </div>
@@ -417,7 +502,7 @@ export default function ChatPage() {
               </section>
 
               <section className="grid gap-4 lg:grid-cols-[360px_1fr]">
-                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-4 lg:self-start">
                   <div className="mb-4 flex items-center gap-2">
                     <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${accentBg(selectedConfig.accent)}`}>
                       {selectedConfig.icon}
@@ -437,6 +522,7 @@ export default function ChatPage() {
                         value={primaryProduct}
                         products={products}
                         onChange={changePrimaryProduct}
+                        disabled={loading}
                       />
                       {mode === "compare" && (
                         <ProductSelect
@@ -444,6 +530,7 @@ export default function ChatPage() {
                           value={secondaryProduct}
                           products={products}
                           onChange={setSecondaryProduct}
+                          disabled={loading}
                         />
                       )}
                       {mode === "ask" && (
@@ -464,12 +551,22 @@ export default function ChatPage() {
                   )}
 
                   {error && (
-                    <div className="mt-4 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 p-3 text-xs text-red-700">
+                    <div role="alert" className="mt-4 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 p-3 text-xs text-red-700">
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                       <div className="flex-1">
                         <p>{error}</p>
                         {traceId && (
                           <p className="mt-1 font-mono text-[10px] text-red-500/80">trace: {traceId}</p>
+                        )}
+                        {!loading && canRun && (
+                          <button
+                            type="button"
+                            onClick={() => runAgentTask()}
+                            className="mt-2 inline-flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-[11px] font-semibold text-red-700 shadow-sm transition hover:bg-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                            重试
+                          </button>
                         )}
                       </div>
                     </div>
@@ -478,16 +575,22 @@ export default function ChatPage() {
                   <button
                     onClick={() => runAgentTask()}
                     disabled={loading || productsLoading || !canRun}
-                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-describedby={!canRun && validationMessage ? "run-validation-message" : undefined}
+                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/20 active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
                   >
                     {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : mode === "ask" ? <Send className="h-4 w-4" /> : selectedConfig.icon}
                     {loading ? "处理中..." : selectedConfig.action}
                   </button>
+                  {!loading && !productsLoading && validationMessage && (
+                    <p id="run-validation-message" className="mt-2 text-xs leading-5 text-slate-500">
+                      {validationMessage}
+                    </p>
+                  )}
                 </div>
 
-                <div className="min-h-[520px] rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="min-h-[360px] rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:min-h-[520px] sm:p-4">
                   {loading ? (
-                    <LoadingState mode={mode} phaseIdx={loadingPhaseIdx} elapsedMs={loadingElapsedMs} />
+                    <LoadingState mode={mode} phaseIdx={loadingPhaseIdx} elapsedMs={loadingElapsedMs} onCancel={cancelAgentTask} />
                   ) : result ? (
                     <ResultView
                       result={result}
@@ -512,6 +615,7 @@ export default function ChatPage() {
         {showRightPanel && (
           <>
             <button
+              type="button"
               aria-label="关闭依据面板"
               onClick={() => {
                 setShowEvidence(false);
@@ -562,6 +666,14 @@ function TopBar({
           <Database className="h-3.5 w-3.5" />
           {productsLoading ? "加载中" : `${productsCount} 个产品`}
         </span>
+        <Link
+          href="/admin/products"
+          aria-label="进入产品管理后台"
+          className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-600 transition hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/15 sm:px-3 sm:py-1.5"
+        >
+          <Settings className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">产品管理</span>
+        </Link>
         {result && (
           <span className="hidden items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700 sm:flex">
             <CheckCircle2 className="h-3.5 w-3.5" />
@@ -573,14 +685,27 @@ function TopBar({
   );
 }
 
-function TaskButton({ mode, active, onClick }: { mode: TaskMode; active: boolean; onClick: () => void }) {
+function TaskButton({
+  mode,
+  active,
+  onClick,
+  disabled,
+}: {
+  mode: TaskMode;
+  active: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   const config = taskConfig[mode];
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm transition-all ${active
+      disabled={disabled}
+      aria-pressed={active}
+      className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm transition-all focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/15 disabled:cursor-not-allowed disabled:opacity-50 ${active
           ? "border-blue-200 bg-blue-50 text-blue-800 shadow-sm"
-          : "border-slate-200 bg-white text-slate-600 hover:border-blue-200 hover:bg-slate-50"
+          : "border-slate-200 bg-white text-slate-600 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-slate-50"
         }`}
     >
       <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${active ? "bg-white" : "bg-slate-50"}`}>
@@ -596,27 +721,155 @@ function ProductSelect({
   value,
   products,
   onChange,
+  disabled = false,
 }: {
   label: string;
   value: string;
   products: ProductInfo[];
   onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
+  const inputId = React.useId();
+  const listboxId = React.useId();
+  const [query, setQuery] = useState(value);
+  const [open, setOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+
+  useEffect(() => {
+    setQuery(value);
+  }, [value]);
+
+  const filteredProducts = React.useMemo(() => {
+    const keyword = open && query === value ? "" : query.trim().toLocaleLowerCase();
+    const candidates = keyword
+      ? products.filter((product) => {
+        const haystack = `${product.name} ${product.description || ""}`.toLocaleLowerCase();
+        return haystack.includes(keyword);
+      })
+      : products;
+
+    return candidates;
+  }, [open, products, query, value]);
+
+  function selectProduct(product: ProductInfo) {
+    setQuery(product.name);
+    setOpen(false);
+    setHighlightedIndex(0);
+    onChange(product.name);
+  }
+
+  function closeAndRestore() {
+    const exact = products.find((product) => product.name === query.trim());
+    if (exact) {
+      selectProduct(exact);
+      return;
+    }
+
+    if (filteredProducts.length === 1 && query.trim()) {
+      selectProduct(filteredProducts[0]);
+      return;
+    }
+
+    setQuery(value);
+    setOpen(false);
+    setHighlightedIndex(0);
+  }
+
   return (
-    <label className="block">
-      <span className="mb-1.5 block text-xs font-semibold text-slate-500">{label}</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-500/10"
-      >
-        {products.map((product) => (
-          <option key={product.id} value={product.name}>
-            {product.name}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="relative">
+      <label htmlFor={inputId} className="mb-1.5 block text-xs font-semibold text-slate-500">
+        {label}
+      </label>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+        <input
+          id={inputId}
+          type="search"
+          value={query}
+          disabled={disabled || products.length === 0}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls={listboxId}
+          aria-activedescendant={open && filteredProducts[highlightedIndex] ? `${listboxId}-${filteredProducts[highlightedIndex].id}` : undefined}
+          onFocus={(event) => {
+            setOpen(true);
+            event.currentTarget.select();
+          }}
+          onBlur={closeAndRestore}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+            setHighlightedIndex(0);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setOpen(true);
+              setHighlightedIndex((index) => Math.min(index + 1, Math.max(filteredProducts.length - 1, 0)));
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setHighlightedIndex((index) => Math.max(index - 1, 0));
+            }
+            if (event.key === "Enter" && open && filteredProducts[highlightedIndex]) {
+              event.preventDefault();
+              selectProduct(filteredProducts[highlightedIndex]);
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setOpen(false);
+              setQuery(value);
+            }
+          }}
+          placeholder={products.length ? "搜索产品名称" : "暂无可用产品"}
+          className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-800 outline-none transition focus:border-blue-300 focus:ring-4 focus:ring-blue-500/10 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+        />
+      </div>
+      {open && !disabled && (
+        <ul
+          id={listboxId}
+          role="listbox"
+          className="absolute z-30 mt-1 max-h-96 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl shadow-slate-200/70"
+        >
+          {filteredProducts.length > 0 ? (
+            filteredProducts.map((product, index) => (
+              <li
+                key={product.id}
+                id={`${listboxId}-${product.id}`}
+                role="option"
+                aria-selected={product.name === value}
+              >
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    selectProduct(product);
+                  }}
+                  className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${index === highlightedIndex
+                      ? "bg-blue-50 text-blue-800"
+                      : "text-slate-700 hover:bg-slate-50"
+                    }`}
+                >
+                  <span className="block truncate font-medium">{product.name}</span>
+                  {product.description && (
+                    <span className="mt-0.5 block truncate text-xs text-slate-500">{product.description}</span>
+                  )}
+                </button>
+              </li>
+            ))
+          ) : (
+            <li className="px-3 py-2 text-sm text-slate-500">没有匹配的产品</li>
+          )}
+          {filteredProducts.length > 0 && (
+            <li className="border-t border-slate-100 px-3 py-2 text-[11px] text-slate-400">
+              共 {filteredProducts.length} 个匹配产品
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -725,20 +978,36 @@ function CompareDimensions() {
   );
 }
 
-function LoadingState({ mode, phaseIdx, elapsedMs }: { mode: TaskMode; phaseIdx: number; elapsedMs: number }) {
+function LoadingState({
+  mode,
+  phaseIdx,
+  elapsedMs,
+  onCancel,
+}: {
+  mode: TaskMode;
+  phaseIdx: number;
+  elapsedMs: number;
+  onCancel: () => void;
+}) {
   const config = taskConfig[mode];
   const phases = config.phases;
   const totalEstimated = phases.reduce((sum, p) => sum + p.estimatedMs, 0);
   const cappedElapsed = Math.min(elapsedMs, totalEstimated);
-  const overallPct = Math.min(100, Math.round((cappedElapsed / totalEstimated) * 100));
+  const overallPct = elapsedMs >= totalEstimated
+    ? 95
+    : Math.min(94, Math.round((cappedElapsed / totalEstimated) * 94));
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
   const etaMs = Math.max(0, totalEstimated - cappedElapsed);
   const etaSec = Math.ceil(etaMs / 1000);
   const overrun = elapsedMs > totalEstimated;
+  const nearTimeout = elapsedMs > config.timeoutMs * 0.7;
+  const phaseRanges = phases.reduce<Array<{ phase: PhaseSpec; start: number; end: number }>>((ranges, phase) => {
+    const start = ranges[ranges.length - 1]?.end ?? 0;
+    return [...ranges, { phase, start, end: start + phase.estimatedMs }];
+  }, []);
 
-  let runningStart = 0;
   return (
-    <div className="flex h-full min-h-[480px] items-center justify-center">
+    <div className="flex h-full min-h-[360px] items-center justify-center sm:min-h-[480px]" aria-busy="true" aria-live="polite">
       <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-slate-50 p-5">
         <div className="mb-4 flex items-center gap-3">
           <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${accentBg(config.accent)}`}>
@@ -747,7 +1016,7 @@ function LoadingState({ mode, phaseIdx, elapsedMs }: { mode: TaskMode; phaseIdx:
           <div className="flex-1">
             <p className="text-sm font-bold text-slate-900">{config.title}进行中</p>
             <p className="text-xs text-slate-500">
-              已用时 {elapsedSec}s・{overrun ? "超出预估，仍在生成中…" : `预计还需 ${etaSec}s`}
+              已用时 {elapsedSec}s・{overrun ? "正在整理最终结论，请保持页面打开" : `预计还需 ${etaSec}s`}
             </p>
           </div>
           <div className="text-right">
@@ -762,14 +1031,11 @@ function LoadingState({ mode, phaseIdx, elapsedMs }: { mode: TaskMode; phaseIdx:
           />
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
-          {phases.map((phase, index) => {
-            const phaseStart = runningStart;
-            const phaseEnd = phaseStart + phase.estimatedMs;
-            runningStart = phaseEnd;
+          {phaseRanges.map(({ phase, start }, index) => {
             const isDone = index < phaseIdx;
             const isActive = index === phaseIdx;
             const phaseProgress = isActive
-              ? Math.min(100, Math.max(5, Math.round(((cappedElapsed - phaseStart) / phase.estimatedMs) * 100)))
+              ? Math.min(100, Math.max(5, Math.round(((cappedElapsed - start) / phase.estimatedMs) * 100)))
               : isDone
                 ? 100
                 : 0;
@@ -806,6 +1072,21 @@ function LoadingState({ mode, phaseIdx, elapsedMs }: { mode: TaskMode; phaseIdx:
               </div>
             );
           })}
+        </div>
+        <div className="mt-4 flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs leading-5 text-slate-500">
+            {nearTimeout
+              ? `这个任务接近 ${Math.round(config.timeoutMs / 1000)} 秒上限，仍可等待，也可以取消后缩小问题。`
+              : "生成期间可以取消当前请求，已有选择和输入会保留。"}
+          </p>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/15"
+          >
+            <X className="h-3.5 w-3.5" />
+            取消请求
+          </button>
         </div>
       </div>
     </div>
@@ -852,12 +1133,20 @@ function ResultView({
   onSourceClick: (source: AgentSource) => void;
   onQuestionSelect: (question: string) => void;
 }) {
+  const sourceById = React.useMemo(() => {
+    return new Map(result.sources.map((source) => [source.clauseId, source]));
+  }, [result.sources]);
+  const onSourceIdClick = (clauseId: number) => {
+    const source = sourceById.get(clauseId);
+    if (source) onSourceClick(source);
+  };
+
   return (
     <div className="space-y-4">
-      {result.mode === "ask" && <AskResultView result={result} onQuestionSelect={onQuestionSelect} />}
-      {result.mode === "explain" && <ExplainResultView result={result} />}
-      {result.mode === "compare" && <CompareResultView result={result} />}
-      {result.mode === "audit" && <AuditResultView result={result} />}
+      {result.mode === "ask" && <AskResultView result={result} onQuestionSelect={onQuestionSelect} onSourceClick={onSourceIdClick} />}
+      {result.mode === "explain" && <ExplainResultView result={result} onSourceClick={onSourceIdClick} />}
+      {result.mode === "compare" && <CompareResultView result={result} onSourceClick={onSourceIdClick} />}
+      {result.mode === "audit" && <AuditResultView result={result} onSourceClick={onSourceIdClick} />}
       <RetrievalPlanBlock probes={result.retrievalPlan} stats={result.retrievalStats} />
       <SourceChips sources={result.sources} onSourceClick={onSourceClick} />
       <AgentSteps steps={result.agentSteps} />
@@ -868,9 +1157,11 @@ function ResultView({
 function AskResultView({
   result,
   onQuestionSelect,
+  onSourceClick,
 }: {
   result: AskResult;
   onQuestionSelect: (question: string) => void;
+  onSourceClick: (clauseId: number) => void;
 }) {
   return (
     <div className="space-y-4">
@@ -878,6 +1169,8 @@ function AskResultView({
         title="一句话结论"
         body={result.shortAnswer || result.answer}
         actions={result.nextActions}
+        sourceIds={result.answerSourceClauseIds}
+        onSourceClick={onSourceClick}
       />
       <ResultHeader
         icon={<MessageCircleQuestion className="h-5 w-5" />}
@@ -889,12 +1182,20 @@ function AskResultView({
         <InfoBlock title="对应产品" body={result.productName} />
         <ListBlock
           title="回答要点"
-          items={result.keyPoints.map((item) => item.value || "条款未说明")}
+          items={result.keyPoints.map((item) => ({
+            text: item.value || "条款未说明",
+            sourceClauseIds: item.sourceClauseIds,
+          }))}
+          onSourceClick={onSourceClick}
           emptyText="暂无更多要点"
         />
         <ListBlock
           title="需要注意"
-          items={result.caveats.map((item) => item.value || "条款未说明")}
+          items={result.caveats.map((item) => ({
+            text: item.value || "条款未说明",
+            sourceClauseIds: item.sourceClauseIds,
+          }))}
+          onSourceClick={onSourceClick}
           warning
           emptyText="暂未发现额外限制"
         />
@@ -904,7 +1205,14 @@ function AskResultView({
   );
 }
 
-function ExplainResultView({ result }: { result: ExplainResult }) {
+function ExplainResultView({ result, onSourceClick }: { result: ExplainResult; onSourceClick: (clauseId: number) => void }) {
+  const suitableForText = typeof result.suitableFor === "string"
+    ? result.suitableFor
+    : result.suitableFor?.value || "条款未说明";
+  const suitableForSourceIds = typeof result.suitableFor === "string"
+    ? []
+    : result.suitableFor?.sourceClauseIds;
+
   return (
     <div className="space-y-4">
       <ResultHeader
@@ -914,16 +1222,38 @@ function ExplainResultView({ result }: { result: ExplainResult }) {
         tone="blue"
       />
       <div className="grid gap-3 lg:grid-cols-2">
-        <InfoBlock title="适合人群" body={result.suitableFor} />
-        <ListBlock title="核心保障" items={result.coverages.map((item) => `${item.title || "保障"}：${item.value || "条款未说明"}`)} />
-        <ListBlock title="不保什么" items={result.exclusions.map((item) => item.value || "条款未说明")} />
-        <ListBlock title="需要注意" items={result.warnings.map((item) => item.value || "条款未说明")} warning />
+        <InfoBlock title="适合人群" body={suitableForText} sourceIds={suitableForSourceIds} onSourceClick={onSourceClick} />
+        <ListBlock
+          title="核心保障"
+          items={result.coverages.map((item) => ({
+            text: `${item.title || "保障"}：${item.value || "条款未说明"}`,
+            sourceClauseIds: item.sourceClauseIds,
+          }))}
+          onSourceClick={onSourceClick}
+        />
+        <ListBlock
+          title="不保什么"
+          items={result.exclusions.map((item) => ({
+            text: item.value || "条款未说明",
+            sourceClauseIds: item.sourceClauseIds,
+          }))}
+          onSourceClick={onSourceClick}
+        />
+        <ListBlock
+          title="需要注意"
+          items={result.warnings.map((item) => ({
+            text: item.value || "条款未说明",
+            sourceClauseIds: item.sourceClauseIds,
+          }))}
+          onSourceClick={onSourceClick}
+          warning
+        />
       </div>
     </div>
   );
 }
 
-function CompareResultView({ result }: { result: CompareResult }) {
+function CompareResultView({ result, onSourceClick }: { result: CompareResult; onSourceClick: (clauseId: number) => void }) {
   return (
     <div className="space-y-4">
       <DecisionCard
@@ -956,7 +1286,8 @@ function CompareResultView({ result }: { result: CompareResult }) {
                 <td className="border-b border-slate-100 px-3 py-3 align-top text-xs font-semibold text-slate-600">{row.dimension}</td>
                 {result.products.map((product) => (
                   <td key={product} className="border-b border-slate-100 px-3 py-3 align-top text-slate-700">
-                    {row.values[product]?.text || "条款未说明"}
+                    <p>{row.values[product]?.text || "条款未说明"}</p>
+                    <SourceRefs sourceIds={row.values[product]?.sourceClauseIds} onSourceClick={onSourceClick} />
                   </td>
                 ))}
               </tr>
@@ -972,7 +1303,7 @@ function CompareResultView({ result }: { result: CompareResult }) {
   );
 }
 
-function AuditResultView({ result }: { result: AuditResult }) {
+function AuditResultView({ result, onSourceClick }: { result: AuditResult; onSourceClick: (clauseId: number) => void }) {
   const risk = {
     low: { label: "低风险", className: "bg-emerald-50 text-emerald-700 border-emerald-100" },
     medium: { label: "中风险", className: "bg-amber-50 text-amber-700 border-amber-100" },
@@ -1009,6 +1340,7 @@ function AuditResultView({ result }: { result: AuditResult }) {
               <StatusPill status={finding.status} />
             </div>
             <p className="text-sm leading-6 text-slate-600">{finding.conclusion}</p>
+            <SourceRefs sourceIds={finding.sourceClauseIds} onSourceClick={onSourceClick} />
           </div>
         ))}
       </div>
@@ -1051,11 +1383,15 @@ function DecisionCard({
   body,
   actions,
   tone = "blue",
+  sourceIds,
+  onSourceClick,
 }: {
   title: string;
   body: string;
   actions?: string[];
   tone?: "blue" | "violet" | "amber";
+  sourceIds?: number[];
+  onSourceClick?: (clauseId: number) => void;
 }) {
   const classes = tone === "violet"
     ? "border-violet-100 bg-violet-50 text-violet-900"
@@ -1071,6 +1407,7 @@ function DecisionCard({
         <h3 className="text-sm font-bold">{title}</h3>
       </div>
       <p className="text-sm leading-6">{body || "条款未说明"}</p>
+      <SourceRefs sourceIds={sourceIds} onSourceClick={onSourceClick} />
       {actions && actions.length > 0 && (
         <div className="mt-3 grid gap-2 md:grid-cols-3">
           {actions.slice(0, 3).map((action, index) => (
@@ -1084,36 +1421,87 @@ function DecisionCard({
   );
 }
 
-function InfoBlock({ title, body }: { title: string; body: string }) {
+function SourceRefs({
+  sourceIds,
+  onSourceClick,
+}: {
+  sourceIds?: number[];
+  onSourceClick?: (clauseId: number) => void;
+}) {
+  const ids = uniqueClauseIds(sourceIds);
+  if (ids.length === 0 || !onSourceClick) return null;
+
+  return (
+    <span className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+      <span>依据</span>
+      {ids.map((id) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onSourceClick(id)}
+          className="rounded-md bg-white px-2 py-1 font-semibold text-blue-700 shadow-sm ring-1 ring-blue-100 transition hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+          aria-label={`查看条款 ${id}`}
+        >
+          #{id}
+        </button>
+      ))}
+    </span>
+  );
+}
+
+function InfoBlock({
+  title,
+  body,
+  sourceIds,
+  onSourceClick,
+}: {
+  title: string;
+  body: string;
+  sourceIds?: number[];
+  onSourceClick?: (clauseId: number) => void;
+}) {
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
       <h4 className="mb-2 text-sm font-bold text-slate-900">{title}</h4>
       <p className="text-sm leading-6 text-slate-600">{body || "条款未说明"}</p>
+      <SourceRefs sourceIds={sourceIds} onSourceClick={onSourceClick} />
     </div>
   );
 }
+
+type EvidenceListItem = string | {
+  text: string;
+  sourceClauseIds?: number[];
+};
 
 function ListBlock({
   title,
   items,
   warning = false,
   emptyText = "条款未说明",
+  onSourceClick,
 }: {
   title: string;
-  items: string[];
+  items: EvidenceListItem[];
   warning?: boolean;
   emptyText?: string;
+  onSourceClick?: (clauseId: number) => void;
 }) {
-  const cleaned = items.filter(Boolean);
+  const cleaned = items
+    .map((item) => typeof item === "string" ? { text: item } : item)
+    .filter((item) => Boolean(item.text));
   return (
     <div className={`rounded-xl border p-3 ${warning ? "border-amber-100 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
       <h4 className={`mb-2 text-sm font-bold ${warning ? "text-amber-900" : "text-slate-900"}`}>{title}</h4>
       {cleaned.length > 0 ? (
         <ul className="space-y-1.5">
           {cleaned.map((item, index) => (
-            <li key={`${item}-${index}`} className="flex gap-2 text-sm leading-6 text-slate-600">
+            <li key={`${item.text}-${index}`} className="flex gap-2 text-sm leading-6 text-slate-600">
               <CheckCircle2 className={`mt-1 h-3.5 w-3.5 shrink-0 ${warning ? "text-amber-500" : "text-blue-500"}`} />
-              <span>{item}</span>
+              <span className="min-w-0">
+                <span>{item.text}</span>
+                <SourceRefs sourceIds={item.sourceClauseIds} onSourceClick={onSourceClick} />
+              </span>
             </li>
           ))}
         </ul>
@@ -1277,7 +1665,11 @@ function RetrievalPill({ coverage }: { coverage: RetrievalProbe["coverage"] }) {
 }
 
 function SourceChips({ sources, onSourceClick }: { sources: AgentSource[]; onSourceClick: (source: AgentSource) => void }) {
-  if (!sources.length) return null;
+  const uniqueSources = sources.filter((source, index, list) => (
+    list.findIndex((item) => item.clauseId === source.clauseId) === index
+  ));
+
+  if (!uniqueSources.length) return null;
 
   return (
     <div className="rounded-xl border border-blue-100 bg-blue-50 p-3">
@@ -1286,11 +1678,12 @@ function SourceChips({ sources, onSourceClick }: { sources: AgentSource[]; onSou
         原文依据
       </div>
       <div className="flex flex-wrap gap-2">
-        {sources.map((source) => (
+        {uniqueSources.map((source) => (
           <button
             key={source.clauseId}
+            type="button"
             onClick={() => onSourceClick(source)}
-            className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-medium text-blue-700 shadow-sm transition-colors hover:bg-blue-100"
+            className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-medium text-blue-700 shadow-sm transition-colors hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
           >
             <FileText className="h-3.5 w-3.5" />
             #{source.clauseId}
@@ -1344,28 +1737,52 @@ function EvidencePanel({
   onSelect: (source: AgentSource) => void;
 }) {
   const selected = activeSource || sources[0] || null;
+  const panelBodyRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
+    panelBodyRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [selected?.clauseId]);
 
   return (
-    <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[420px] shrink-0 flex-col overflow-hidden border border-slate-200/80 bg-white/95 shadow-xl shadow-slate-200/60 backdrop-blur lg:static lg:w-[420px] lg:rounded-2xl">
+    <aside
+      aria-label="查看原文依据"
+      className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[420px] shrink-0 flex-col overflow-hidden border border-slate-200/80 bg-white/95 shadow-xl shadow-slate-200/60 backdrop-blur lg:sticky lg:bottom-auto lg:top-3 lg:h-[calc(100dvh-1.5rem)] lg:max-h-[calc(100dvh-1.5rem)] lg:w-[420px] lg:self-start lg:rounded-2xl"
+    >
       <div className="flex h-16 items-center justify-between border-b border-slate-200 px-4">
         <div className="flex items-center gap-2">
           <FileText className="h-4 w-4 text-blue-600" />
           <span className="text-sm font-bold text-slate-900">查看依据</span>
         </div>
-        <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-lg hover:bg-slate-100">
+        <button
+          type="button"
+          aria-label="关闭依据面板"
+          onClick={onClose}
+          className="flex h-7 w-7 items-center justify-center rounded-lg hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+        >
           <X className="h-4 w-4 text-slate-400" />
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div ref={panelBodyRef} className="flex-1 overflow-y-auto p-4">
         {selected ? (
           <div className="space-y-4">
             <div className="flex flex-wrap gap-2">
               {sources.map((source) => (
                 <button
                   key={source.clauseId}
+                  type="button"
                   onClick={() => onSelect(source)}
-                  className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${selected.clauseId === source.clauseId
+                  aria-pressed={selected.clauseId === source.clauseId}
+                  className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 ${selected.clauseId === source.clauseId
                       ? "bg-blue-600 text-white"
                       : "bg-blue-50 text-blue-700 hover:bg-blue-100"
                     }`}
